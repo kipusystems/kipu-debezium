@@ -1,4 +1,7 @@
-# Kipu is using the branch 1.7.
+# Kipu is using the main branch
+# To build run: mvn clean Verify -Dquick
+# Copy the 3 jar files from respective target directories, debezium-core, debezium-api, debezium-connector-postgres
+# Also need postgresql and protobuf-java jar files.
 
 
 
