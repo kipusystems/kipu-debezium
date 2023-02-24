@@ -26,7 +26,6 @@ import io.debezium.relational.RelationalSnapshotChangeEventSource;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
 import io.debezium.schema.SchemaChangeEvent;
-import io.debezium.schema.SchemaChangeEvent.SchemaChangeEventType;
 import io.debezium.util.Clock;
 
 public class PostgresSnapshotChangeEventSource extends RelationalSnapshotChangeEventSource<PostgresPartition, PostgresOffsetContext> {
@@ -95,7 +94,7 @@ public class PostgresSnapshotChangeEventSource extends RelationalSnapshotChangeE
     @Override
     protected Set<TableId> getAllTableIds(RelationalSnapshotContext<PostgresPartition, PostgresOffsetContext> ctx)
             throws Exception {
-        return jdbcConnection.readTableNames(ctx.catalogName, null, null, new String[]{ "TABLE" });
+        return jdbcConnection.getAllTableIds(ctx.catalogName);
     }
 
     @Override
@@ -146,7 +145,7 @@ public class PostgresSnapshotChangeEventSource extends RelationalSnapshotChangeE
         LOGGER.info("Read xlogStart at '{}' from transaction '{}'", xlogStart, txId);
 
         // use the old xmin, as we don't want to update it if in xmin recovery
-        offset.updateWalPosition(xlogStart, offset.lastCompletelyProcessedLsn(), clock.currentTime(), txId, offset.xmin(), null);
+        offset.updateWalPosition(xlogStart, offset.lastCompletelyProcessedLsn(), clock.currentTime(), txId, offset.xmin(), null, null);
     }
 
     protected void updateOffsetForPreSnapshotCatchUpStreaming(PostgresOffsetContext offset) throws SQLException {
@@ -205,21 +204,17 @@ public class PostgresSnapshotChangeEventSource extends RelationalSnapshotChangeE
     protected SchemaChangeEvent getCreateTableEvent(RelationalSnapshotContext<PostgresPartition, PostgresOffsetContext> snapshotContext,
                                                     Table table)
             throws SQLException {
-        return new SchemaChangeEvent(
-                snapshotContext.partition.getSourcePartition(),
-                snapshotContext.offset.getOffset(),
-                snapshotContext.offset.getSourceInfo(),
-                snapshotContext.catalogName,
-                table.id().schema(),
-                null,
-                table,
-                SchemaChangeEventType.CREATE,
-                true);
+        return SchemaChangeEvent.ofSnapshotCreate(snapshotContext.partition, snapshotContext.offset, snapshotContext.catalogName, table);
     }
 
     @Override
-    protected void complete(SnapshotContext<PostgresPartition, PostgresOffsetContext> snapshotContext) {
+    protected void completed(SnapshotContext<PostgresPartition, PostgresOffsetContext> snapshotContext) {
         snapshotter.snapshotCompleted();
+    }
+
+    @Override
+    protected void aborted(SnapshotContext<PostgresPartition, PostgresOffsetContext> snapshotContext) {
+        snapshotter.snapshotAborted();
     }
 
     /**
@@ -246,7 +241,7 @@ public class PostgresSnapshotChangeEventSource extends RelationalSnapshotChangeE
      */
     private static class PostgresSnapshotContext extends RelationalSnapshotContext<PostgresPartition, PostgresOffsetContext> {
 
-        public PostgresSnapshotContext(PostgresPartition partition, String catalogName) throws SQLException {
+        PostgresSnapshotContext(PostgresPartition partition, String catalogName) throws SQLException {
             super(partition, catalogName);
         }
     }

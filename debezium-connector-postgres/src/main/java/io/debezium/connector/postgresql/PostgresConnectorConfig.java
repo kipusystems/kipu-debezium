@@ -8,10 +8,8 @@ package io.debezium.connector.postgresql;
 
 import java.time.Duration;
 import java.util.Arrays;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigDef.Importance;
@@ -39,7 +37,6 @@ import io.debezium.connector.postgresql.snapshot.InitialOnlySnapshotter;
 import io.debezium.connector.postgresql.snapshot.InitialSnapshotter;
 import io.debezium.connector.postgresql.snapshot.NeverSnapshotter;
 import io.debezium.connector.postgresql.spi.Snapshotter;
-import io.debezium.data.Envelope;
 import io.debezium.jdbc.JdbcConfiguration;
 import io.debezium.relational.ColumnFilterMode;
 import io.debezium.relational.RelationalDatabaseConnectorConfig;
@@ -202,12 +199,6 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
          * Perform a snapshot and then stop before attempting to receive any logical changes.
          */
         INITIAL_ONLY("initial_only", (c) -> new InitialOnlySnapshotter()),
-
-        /**
-         * Perform an exported snapshot
-         */
-        @Deprecated
-        EXPORTED("exported", (c) -> new InitialSnapshotter()),
 
         /**
          * Inject a custom snapshotter, which allows for more control over snapshots.
@@ -424,49 +415,6 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
     }
 
     /**
-     * The set of predefined TruncateHandlingMode options or aliases
-     *
-     * @deprecated use skipped operations instead.
-     */
-    @Deprecated
-    public enum TruncateHandlingMode implements EnumeratedValue {
-
-        /**
-         * Skip TRUNCATE messages
-         */
-        SKIP("skip"),
-
-        /**
-         * Handle & Include TRUNCATE messages
-         */
-        INCLUDE("include");
-
-        private final String value;
-
-        TruncateHandlingMode(String value) {
-            this.value = value;
-        }
-
-        @Override
-        public String getValue() {
-            return value;
-        }
-
-        public static TruncateHandlingMode parse(String value) {
-            if (value == null) {
-                return null;
-            }
-            value = value.trim();
-            for (TruncateHandlingMode truncateHandlingMode : TruncateHandlingMode.values()) {
-                if (truncateHandlingMode.getValue().equalsIgnoreCase(value)) {
-                    return truncateHandlingMode;
-                }
-            }
-            return null;
-        }
-    }
-
-    /**
      * The set of predefined SchemaRefreshMode options or aliases.
      */
     public enum SchemaRefreshMode implements EnumeratedValue {
@@ -545,7 +493,7 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withImportance(Importance.MEDIUM)
             .withDefault(ReplicationConnection.Builder.DEFAULT_SLOT_NAME)
             .withValidation(PostgresConnectorConfig::validateReplicationSlotName)
-            .withDescription("The name of the Postgres logical decoding slot created for streaming changes from a plugin." +
+            .withDescription("The name of the Postgres logical decoding slot created for streaming changes from a plugin. " +
                     "Defaults to 'debezium");
 
     public static final Field DROP_SLOT_ON_STOP = Field.create("slot.drop.on.stop")
@@ -555,7 +503,7 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withDefault(false)
             .withImportance(Importance.MEDIUM)
             .withDescription(
-                    "Whether or not to drop the logical replication slot when the connector finishes orderly" +
+                    "Whether or not to drop the logical replication slot when the connector finishes orderly. " +
                             "By default the replication is kept so that on restart progress can resume from the last recorded location");
 
     public static final Field PUBLICATION_NAME = Field.create("publication.name")
@@ -565,7 +513,7 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withWidth(Width.MEDIUM)
             .withImportance(Importance.MEDIUM)
             .withDefault(ReplicationConnection.Builder.DEFAULT_PUBLICATION_NAME)
-            .withDescription("The name of the Postgres 10+ publication used for streaming changes from a plugin." +
+            .withDescription("The name of the Postgres 10+ publication used for streaming changes from a plugin. " +
                     "Defaults to '" + ReplicationConnection.Builder.DEFAULT_PUBLICATION_NAME + "'");
 
     public enum AutoCreateMode implements EnumeratedValue {
@@ -683,7 +631,7 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withWidth(Width.LONG)
             .withImportance(Importance.LOW)
             .withDescription("A semicolon separated list of SQL statements to be executed when a JDBC connection to the database is established. "
-                    + "Note that the connector may establish JDBC connections at its own discretion, so this should typically be used for configuration"
+                    + "Note that the connector may establish JDBC connections at its own discretion, so this should typically be used for configuration "
                     + "of session parameters only, but not for executing DML statements. Use doubled semicolon (';;') to use a semicolon as a character "
                     + "and not as a delimiter.");
 
@@ -693,11 +641,11 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withEnum(SecureConnectionMode.class, SecureConnectionMode.DISABLED)
             .withWidth(Width.MEDIUM)
             .withImportance(Importance.MEDIUM)
-            .withDescription("Whether to use an encrypted connection to Postgres. Options include"
+            .withDescription("Whether to use an encrypted connection to Postgres. Options include: "
                     + "'disable' (the default) to use an unencrypted connection; "
                     + "'require' to use a secure (encrypted) connection, and fail if one cannot be established; "
                     + "'verify-ca' like 'required' but additionally verify the server TLS certificate against the configured Certificate Authority "
-                    + "(CA) certificates, or fail if no valid matching CA certificates are found; or"
+                    + "(CA) certificates, or fail if no valid matching CA certificates are found; or "
                     + "'verify-full' like 'verify-ca' but additionally verify that the server certificate matches the host to which the connection is attempted.");
 
     public static final Field SSL_CLIENT_CERT = Field.create(DATABASE_CONFIG_PREFIX + "sslcert")
@@ -747,13 +695,6 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withEnum(SnapshotMode.class, SnapshotMode.INITIAL)
             .withWidth(Width.SHORT)
             .withImportance(Importance.MEDIUM)
-            .withValidation((config, field, output) -> {
-                if (config.getString(field).toLowerCase().equals(SnapshotMode.EXPORTED.getValue())) {
-                    LOGGER.warn("Value '{}' of 'snapshot.mode' option is deprecated, use '{}' instead",
-                            SnapshotMode.EXPORTED.getValue(), SnapshotMode.INITIAL.getValue());
-                }
-                return 0;
-            })
             .withDescription("The criteria for running a snapshot upon startup of the connector. "
                     + "Options include: "
                     + "'always' to specify that the connector run a snapshot each time it starts up; "
@@ -777,7 +718,7 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
                 return 0;
             })
             .withDescription(
-                    "When 'snapshot.mode' is set as custom, this setting must be set to specify a fully qualified class name to load (via the default class loader)."
+                    "When 'snapshot.mode' is set as custom, this setting must be set to specify a fully qualified class name to load (via the default class loader). "
                             + "This class must implement the 'Snapshotter' interface and is called on each app boot to determine whether to do a snapshot and how to build queries.");
 
     /**
@@ -807,30 +748,14 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withDescription(
                     "A comma-separated list of regular expressions that match the logical decoding message prefixes to be monitored. All prefixes are monitored by default.");
 
-    /**
-     * @deprecated use skipped operations instead
-     */
-    @Deprecated
-    public static final Field TRUNCATE_HANDLING_MODE = Field.create("truncate.handling.mode")
-            .withDisplayName("Truncate handling mode")
-            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR, 23))
-            .withEnum(TruncateHandlingMode.class, TruncateHandlingMode.SKIP)
-            .withWidth(Width.MEDIUM)
-            .withImportance(Importance.MEDIUM)
-            .withValidation(PostgresConnectorConfig::validateTruncateHandlingMode)
-            .withDescription("(Deprecated) Specify how TRUNCATE operations are handled for change events (supported only on pg11+ pgoutput plugin), including: " +
-                    "'skip' to skip / ignore TRUNCATE events (default), " +
-                    "'include' to handle and include TRUNCATE events. " +
-                    "Use 'skipped.operations' instead.");
-
     public static final Field HSTORE_HANDLING_MODE = Field.create("hstore.handling.mode")
             .withDisplayName("HStore Handling")
             .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR, 22))
             .withEnum(HStoreHandlingMode.class, HStoreHandlingMode.JSON)
             .withWidth(Width.MEDIUM)
             .withImportance(Importance.LOW)
-            .withDescription("Specify how HSTORE columns should be represented in change events, including:"
-                    + "'json' represents values as string-ified JSON (default)"
+            .withDescription("Specify how HSTORE columns should be represented in change events, including: "
+                    + "'json' represents values as string-ified JSON (default); "
                     + "'map' represents values as a key/value map");
 
     public static final Field INTERVAL_HANDLING_MODE = Field.create("interval.handling.mode")
@@ -839,8 +764,8 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withEnum(IntervalHandlingMode.class, IntervalHandlingMode.NUMERIC)
             .withWidth(Width.MEDIUM)
             .withImportance(Importance.LOW)
-            .withDescription("Specify how INTERVAL columns should be represented in change events, including:"
-                    + "'string' represents values as an exact ISO formatted string"
+            .withDescription("Specify how INTERVAL columns should be represented in change events, including: "
+                    + "'string' represents values as an exact ISO formatted string; "
                     + "'numeric' (default) represents values using the inexact conversion into microseconds");
 
     public static final Field STATUS_UPDATE_INTERVAL_MS = Field.create("status.update.interval.ms")
@@ -870,7 +795,7 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withDefault(false)
             .withWidth(Width.SHORT)
             .withImportance(Importance.MEDIUM)
-            .withDescription("Specify whether the fields of data type not supported by Debezium should be processed:"
+            .withDescription("Specify whether the fields of data type not supported by Debezium should be processed: "
                     + "'false' (the default) omits the fields; "
                     + "'true' converts the field into an implementation dependent binary representation.");
 
@@ -903,20 +828,6 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
                     "The default is set to 0 ms, which disables tracking xmin.")
             .withValidation(Field::isNonNegativeLong);
 
-    @Deprecated
-    public static final Field TOASTED_VALUE_PLACEHOLDER = Field.create("toasted.value.placeholder")
-            .withDisplayName("Toasted value placeholder")
-            .withType(Type.STRING)
-            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR_ADVANCED, 2))
-            .withWidth(Width.MEDIUM)
-            .withDefault(DEFAULT_UNAVAILABLE_VALUE_PLACEHOLDER)
-            .withImportance(Importance.MEDIUM)
-            .withValidation(PostgresConnectorConfig::validateToastedValuePlaceholder)
-            .withDescription("Specify the constant that will be provided by Debezium to indicate that " +
-                    "the original value is a toasted value not provided by the database. " +
-                    "If starts with 'hex:' prefix it is expected that the rest of the string represents hexadecimal encoded octets." +
-                    "Deprecated, use 'unavailable.value.placeholder' instead.");
-
     public static final Field UNAVAILABLE_VALUE_PLACEHOLDER = RelationalDatabaseConnectorConfig.UNAVAILABLE_VALUE_PLACEHOLDER
             .withDescription("Specify the constant that will be provided by Debezium to indicate that " +
                     "the original value is a toasted value not provided by the database. " +
@@ -931,31 +842,33 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withDefault(2)
             .withDescription("Number of fractional digits when money type is converted to 'precise' decimal number.");
 
-    // With the deprecation of TruncateHandlingMode and an attempt to fold that into skipped operations,
-    // the PostgreSQL flavor of skipped operations will skip TRUNCATE by default to align with legacy
-    // behavior of TruncateHandlingMode. This way we can emit boot-up warnings in preparation of the
-    // overall behavior change in a future release.
-    public static final Field SKIPPED_OPERATIONS = CommonConnectorConfig.SKIPPED_OPERATIONS
-            .withDefault("t")
-            .withValidation(CommonConnectorConfig::validateSkippedOperation, PostgresConnectorConfig::validateSkippedOperations);
+    public static final Field SHOULD_FLUSH_LSN_IN_SOURCE_DB = Field.create("flush.lsn.source")
+            .withDisplayName("Boolean to determine if Debezium should flush LSN in the source database")
+            .withType(Type.BOOLEAN)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR, 99))
+            .withWidth(Width.SHORT)
+            .withImportance(Importance.LOW)
+            .withDescription(
+                    "Boolean to determine if Debezium should flush LSN in the source postgres database. If set to false, user will have to flush the LSN manually outside Debezium.")
+            .withDefault(Boolean.TRUE)
+            .withValidation(Field::isBoolean, PostgresConnectorConfig::validateFlushLsnSource);
 
-    private final TruncateHandlingMode truncateHandlingMode;
     private final LogicalDecodingMessageFilter logicalDecodingMessageFilter;
     private final HStoreHandlingMode hStoreHandlingMode;
     private final IntervalHandlingMode intervalHandlingMode;
     private final SnapshotMode snapshotMode;
     private final SchemaRefreshMode schemaRefreshMode;
+    private final boolean flushLsnOnSource;
 
     public PostgresConnectorConfig(Configuration config) {
         super(
                 config,
-                config.getString(RelationalDatabaseConnectorConfig.SERVER_NAME),
                 new SystemTablesPredicate(),
                 x -> x.schema() + "." + x.table(),
                 DEFAULT_SNAPSHOT_FETCH_SIZE,
-                ColumnFilterMode.SCHEMA);
+                ColumnFilterMode.SCHEMA,
+                false);
 
-        this.truncateHandlingMode = TruncateHandlingMode.parse(config.getString(PostgresConnectorConfig.TRUNCATE_HANDLING_MODE));
         this.logicalDecodingMessageFilter = new LogicalDecodingMessageFilter(config.getString(LOGICAL_DECODING_MESSAGE_PREFIX_INCLUDE_LIST),
                 config.getString(LOGICAL_DECODING_MESSAGE_PREFIX_EXCLUDE_LIST));
         String hstoreHandlingModeStr = config.getString(PostgresConnectorConfig.HSTORE_HANDLING_MODE);
@@ -963,6 +876,7 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
         this.intervalHandlingMode = IntervalHandlingMode.parse(config.getString(PostgresConnectorConfig.INTERVAL_HANDLING_MODE));
         this.snapshotMode = SnapshotMode.parse(config.getString(SNAPSHOT_MODE));
         this.schemaRefreshMode = SchemaRefreshMode.parse(config.getString(SCHEMA_REFRESH_MODE));
+        this.flushLsnOnSource = config.getBoolean(SHOULD_FLUSH_LSN_IN_SOURCE_DB);
     }
 
     protected String hostname() {
@@ -995,16 +909,6 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
 
     public String publicationName() {
         return getConfig().getString(PUBLICATION_NAME);
-    }
-
-    @Override
-    public EnumSet<Envelope.Operation> getSkippedOperations() {
-        EnumSet<Envelope.Operation> skippedOperations = super.getSkippedOperations();
-        // If user specified TruncateHandlingMode.SKIP we merge that with the existing skipped operations
-        if (TruncateHandlingMode.SKIP.equals(truncateHandlingMode)) {
-            skippedOperations.add(Envelope.Operation.TRUNCATE);
-        }
-        return skippedOperations;
     }
 
     protected AutoCreateMode publicationAutocreateMode() {
@@ -1059,12 +963,13 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
         return Duration.ofMillis(getConfig().getLong(PostgresConnectorConfig.XMIN_FETCH_INTERVAL));
     }
 
+    public boolean isFlushLsnOnSource() {
+        return flushLsnOnSource;
+    }
+
     @Override
     public byte[] getUnavailableValuePlaceholder() {
-        String placeholder = getConfig().getString(TOASTED_VALUE_PLACEHOLDER);
-        if (Strings.isNullOrEmpty(placeholder)) {
-            placeholder = getConfig().getString(UNAVAILABLE_VALUE_PLACEHOLDER);
-        }
+        String placeholder = getConfig().getString(UNAVAILABLE_VALUE_PLACEHOLDER);
         if (placeholder.startsWith("hex:")) {
             return Strings.hexStringToByteArray(placeholder.substring(4));
         }
@@ -1077,12 +982,7 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
 
     @Override
     protected SourceInfoStructMaker<? extends AbstractSourceInfo> getSourceInfoStructMaker(Version version) {
-        switch (version) {
-            case V1:
-                return new LegacyV1PostgresSourceInfoStructMaker(Module.name(), Module.version(), this);
-            default:
-                return new PostgresSourceInfoStructMaker(Module.name(), Module.version(), this);
-        }
+        return new PostgresSourceInfoStructMaker(Module.name(), Module.version(), this);
     }
 
     private static final ConfigDefinition CONFIG_DEFINITION = RelationalDatabaseConnectorConfig.CONFIG_DEFINITION.edit()
@@ -1113,10 +1013,9 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
                     TCP_KEEPALIVE,
                     XMIN_FETCH_INTERVAL,
                     // Use this connector's implementation rather than common connector's flavor
-                    SKIPPED_OPERATIONS)
-            .events(
-                    INCLUDE_UNKNOWN_DATATYPES,
-                    TOASTED_VALUE_PLACEHOLDER)
+                    SKIPPED_OPERATIONS,
+                    SHOULD_FLUSH_LSN_IN_SOURCE_DB)
+            .events(INCLUDE_UNKNOWN_DATATYPES)
             .connector(
                     SNAPSHOT_MODE,
                     SNAPSHOT_MODE_CLASS,
@@ -1125,7 +1024,6 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
                     SCHEMA_NAME_ADJUSTMENT_MODE,
                     INTERVAL_HANDLING_MODE,
                     SCHEMA_REFRESH_MODE,
-                    TRUNCATE_HANDLING_MODE,
                     INCREMENTAL_SNAPSHOT_CHUNK_SIZE,
                     UNAVAILABLE_VALUE_PLACEHOLDER,
                     LOGICAL_DECODING_MESSAGE_PREFIX_INCLUDE_LIST,
@@ -1155,87 +1053,6 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
         return errors;
     }
 
-    private static int validateTruncateHandlingMode(Configuration config, Field field, Field.ValidationOutput problems) {
-        final String value = config.getString(field);
-        int errors = 0;
-        if (value != null) {
-            TruncateHandlingMode truncateHandlingMode = TruncateHandlingMode.parse(value);
-            if (truncateHandlingMode == null) {
-                List<String> validModes = Arrays.stream(TruncateHandlingMode.values()).map(TruncateHandlingMode::getValue).collect(Collectors.toList());
-                String message = String.format("Valid values for %s are %s, but got '%s'", field.name(), validModes, value);
-                problems.accept(field, value, message);
-                errors++;
-                return errors;
-            }
-            if (truncateHandlingMode == TruncateHandlingMode.INCLUDE) {
-                final LogicalDecoder logicalDecoder = LogicalDecoder.parse(config.getString(PLUGIN_NAME));
-                if (!logicalDecoder.supportsTruncate()) {
-                    String message = String.format(
-                            "%s '%s' is not supported with configuration %s '%s'",
-                            field.name(), truncateHandlingMode.getValue(), PLUGIN_NAME.name(), logicalDecoder.getValue());
-                    problems.accept(field, value, message);
-                    errors++;
-                }
-            }
-            if (errors == 0) {
-                LOGGER.warn("Configuration property '{}' is deprecated and will be removed in future versions. Please use '{}' instead.",
-                        TRUNCATE_HANDLING_MODE.name(),
-                        SKIPPED_OPERATIONS.name());
-            }
-        }
-        return errors;
-    }
-
-    private static int validateSkippedOperations(Configuration config, Field field, Field.ValidationOutput problems) {
-        // We explicitly use this syntax to get the raw user-supplied value without defaults.
-        // We need to know whether the value is actually supplied without having the default value being enforced.
-        final String value = config.getString(field.name(), (String) null);
-
-        boolean isTruncateSkipped = false;
-        if (value != null) {
-            // A value is provided, verify whether "t" (truncate) is part of the user-supplied value
-            final String[] operations = value.split(",");
-            for (String operation : operations) {
-                if ("t".equals(operation)) {
-                    isTruncateSkipped = true;
-                    break;
-                }
-            }
-        }
-
-        if (!isTruncateSkipped) {
-            // The user did not explicitly configure skipped.operations, or it is configured but the user did
-            // not include the "t" in their explicit configuration value.
-            final LogicalDecoder logicalDecoder = LogicalDecoder.parse(config.getString(PLUGIN_NAME));
-            if (!logicalDecoder.supportsTruncate()) {
-                // if the decoder doesn't support truncate, there is nothing to warn about
-                return 0;
-            }
-            final TruncateHandlingMode truncateHandlingMode = TruncateHandlingMode.parse(config.getString(TRUNCATE_HANDLING_MODE));
-            if (truncateHandlingMode == TruncateHandlingMode.SKIP) {
-                // the user is allowing the legacy configuration option's skip default to be used.
-                // We want to warn about this configuration pair being changed in a future version, urging the user
-                // to explicitly configure skipped.operations if they want to maintain skipped TRUNCATEs.
-                LOGGER.warn("Configuration property '{}' is deprecated and will be removed soon. " +
-                        "If you wish to retain skipped truncate functionality, please configure '{}' with \"{}\".",
-                        TRUNCATE_HANDLING_MODE.name(),
-                        SKIPPED_OPERATIONS.name(),
-                        "t");
-            }
-        }
-        return 0;
-    }
-
-    private static int validateToastedValuePlaceholder(Configuration config, Field field, Field.ValidationOutput problems) {
-        final String placeholder = config.getString(TOASTED_VALUE_PLACEHOLDER);
-        if (!Strings.isNullOrEmpty(placeholder)) {
-            LOGGER.warn("Configuration property '{}' is deprecated and will be removed in future versions. Please use '{}' instead.",
-                    TOASTED_VALUE_PLACEHOLDER.name(),
-                    UNAVAILABLE_VALUE_PLACEHOLDER.name());
-        }
-        return 0;
-    }
-
     private static int validateLogicalDecodingMessageExcludeList(Configuration config, Field field, Field.ValidationOutput problems) {
         String includeList = config.getString(LOGICAL_DECODING_MESSAGE_PREFIX_INCLUDE_LIST);
         String excludeList = config.getString(LOGICAL_DECODING_MESSAGE_PREFIX_EXCLUDE_LIST);
@@ -1244,6 +1061,14 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             problems.accept(LOGICAL_DECODING_MESSAGE_PREFIX_EXCLUDE_LIST, excludeList,
                     "\"logical_decoding_message.prefix.include.list\" is already specified");
             return 1;
+        }
+        return 0;
+    }
+
+    private static int validateFlushLsnSource(Configuration config, Field field, Field.ValidationOutput problems) {
+        if (config.getString(PostgresConnectorConfig.SHOULD_FLUSH_LSN_IN_SOURCE_DB, "true").equalsIgnoreCase("false")) {
+            LOGGER.warn("Property '" + PostgresConnectorConfig.SHOULD_FLUSH_LSN_IN_SOURCE_DB.name()
+                    + "' is set to 'false', the LSN will not be flushed to the database source and WAL logs will not be cleared. User is expected to handle this outside Debezium.");
         }
         return 0;
     }
@@ -1267,8 +1092,8 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
 
         @Override
         public boolean isIncluded(TableId t) {
-            return !SYSTEM_SCHEMAS.contains(t.schema().toLowerCase()) &&
-                    !SYSTEM_TABLES.contains(t.table().toLowerCase()) &&
+            return t.schema() != null && !SYSTEM_SCHEMAS.contains(t.schema().toLowerCase()) &&
+                    t.table() != null && !SYSTEM_TABLES.contains(t.table().toLowerCase()) &&
                     !t.schema().startsWith(TEMP_TABLE_SCHEMA_PREFIX);
         }
     }

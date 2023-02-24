@@ -5,7 +5,7 @@
  */
 package io.debezium.connector.mongodb;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
 
@@ -15,6 +15,7 @@ import org.junit.Test;
 
 import io.debezium.connector.mongodb.MongoDbConnectorConfig.SnapshotMode;
 import io.debezium.doc.FixFor;
+import io.debezium.schema.AbstractTopicNamingStrategy;
 import io.debezium.util.Collect;
 import io.debezium.util.Testing;
 
@@ -28,7 +29,7 @@ public class TransactionMetadataIT extends AbstractMongoConnectorIT {
     @Test
     public void transactionMetadata() throws Exception {
         Testing.Print.enable();
-        config = TestHelper.getConfiguration()
+        config = TestHelper.getConfiguration(mongo)
                 .edit()
                 .with(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST, "dbA.c1")
                 .with(MongoDbConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL)
@@ -37,9 +38,9 @@ public class TransactionMetadataIT extends AbstractMongoConnectorIT {
 
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
 
-        if (!TestHelper.transactionsSupported(primary(), "mongo1")) {
+        if (!TestHelper.transactionsSupported()) {
             return;
         }
 
@@ -55,12 +56,12 @@ public class TransactionMetadataIT extends AbstractMongoConnectorIT {
         List<Document> documentsToInsert2 = loadTestDocuments("restaurants6.json");
         insertDocuments("dbA", "c1", documentsToInsert2.toArray(new Document[0]));
 
-        // BEGIN, data, END, BEGIN data for oplog, BEGIN, data, END, data for change stream
-        final SourceRecords records = consumeRecordsByTopic(1 + 6 + 1 + (TestHelper.isOplogCaptureMode() ? 1 : 0) + 1);
+        // BEGIN, data, END, data for change stream
+        final SourceRecords records = consumeRecordsByTopic(1 + 6 + 1 + 1);
         final List<SourceRecord> c1s = records.recordsForTopic("mongo1.dbA.c1");
         final List<SourceRecord> txs = records.recordsForTopic("mongo1.transaction");
         assertThat(c1s).hasSize(7);
-        assertThat(txs).hasSize((TestHelper.isOplogCaptureMode() ? 3 : 2));
+        assertThat(txs).hasSize(2);
 
         final List<SourceRecord> all = records.allRecordsInOrder();
         final String txId1 = assertBeginTransaction(all.get(0));
@@ -72,11 +73,6 @@ public class TransactionMetadataIT extends AbstractMongoConnectorIT {
         }
 
         assertEndTransaction(all.get(7), txId1, 6, Collect.hashMapOf("rs0.dbA.c1", 6));
-
-        if (TestHelper.isOplogCaptureMode()) {
-            final String txId2 = assertBeginTransaction(all.get(8));
-            assertRecordTransactionMetadata(all.get(9), txId2, 1, 1);
-        }
 
         stopConnector();
     }
@@ -85,19 +81,19 @@ public class TransactionMetadataIT extends AbstractMongoConnectorIT {
     @FixFor("DBZ-4077")
     public void transactionMetadataWithCustomTopicName() throws Exception {
         Testing.Print.enable();
-        config = TestHelper.getConfiguration()
+        config = TestHelper.getConfiguration(mongo)
                 .edit()
                 .with(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST, "dbA.c1")
                 .with(MongoDbConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL)
                 .with(MongoDbConnectorConfig.PROVIDE_TRANSACTION_METADATA, true)
-                .with(MongoDbConnectorConfig.TRANSACTION_TOPIC, "tx.of.${database.server.name}")
+                .with(AbstractTopicNamingStrategy.TOPIC_TRANSACTION, "tx.of.server")
                 .build();
 
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
 
-        if (!TestHelper.transactionsSupported(primary(), "mongo1")) {
+        if (!TestHelper.transactionsSupported()) {
             return;
         }
 
@@ -113,12 +109,12 @@ public class TransactionMetadataIT extends AbstractMongoConnectorIT {
         List<Document> documentsToInsert2 = loadTestDocuments("restaurants6.json");
         insertDocuments("dbA", "c1", documentsToInsert2.toArray(new Document[0]));
 
-        // BEGIN, data, END, BEGIN data for oplog, BEGIN, data, END, data for change stream
-        final SourceRecords records = consumeRecordsByTopic(1 + 6 + 1 + (TestHelper.isOplogCaptureMode() ? 1 : 0) + 1);
+        // BEGIN, data, END, data
+        final SourceRecords records = consumeRecordsByTopic(1 + 6 + 1 + 1);
         final List<SourceRecord> c1s = records.recordsForTopic("mongo1.dbA.c1");
-        final List<SourceRecord> txs = records.recordsForTopic("tx.of.mongo1");
+        final List<SourceRecord> txs = records.recordsForTopic("mongo1.tx.of.server");
         assertThat(c1s).hasSize(7);
-        assertThat(txs).hasSize((TestHelper.isOplogCaptureMode() ? 3 : 2));
+        assertThat(txs).hasSize(2);
 
         final List<SourceRecord> all = records.allRecordsInOrder();
         final String txId1 = assertBeginTransaction(all.get(0));
@@ -130,11 +126,6 @@ public class TransactionMetadataIT extends AbstractMongoConnectorIT {
         }
 
         assertEndTransaction(all.get(7), txId1, 6, Collect.hashMapOf("rs0.dbA.c1", 6));
-
-        if (TestHelper.isOplogCaptureMode()) {
-            final String txId2 = assertBeginTransaction(all.get(8));
-            assertRecordTransactionMetadata(all.get(9), txId2, 1, 1);
-        }
 
         stopConnector();
     }

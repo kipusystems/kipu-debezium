@@ -1,10 +1,11 @@
 #! /usr/bin/env bash
+set -e
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 DOCKER_FILE=${DIR}/../docker/rhel_kafka/Dockerfile
 PLUGIN_DIR="plugins"
 EXTRA_LIBS=""
 
-OPTS=$(getopt -o d:i:a:k:l:f:r:o:t:g: --long dir:,image:,archive-urls:,kafka-url:,libs:,dockerfile:,registry:,organisation:,tags:,auto-tag:,dest-login:,dest-pass:,img-output: -n 'parse-options' -- "$@")
+OPTS=$(getopt -o d:i:a:k:z:l:f:r:o:t:g: --long dir:,image:,archive-urls:,kafka-url:,dbz-scripts:,libs:,dockerfile:,registry:,organisation:,tags:,auto-tag:,dest-login:,dest-pass:,img-output: -n 'parse-options' -- "$@")
 if [ $? != 0 ] ; then echo "Failed parsing options." >&2 ; exit 1 ; fi
 eval set -- "$OPTS"
 
@@ -15,6 +16,7 @@ while true; do
     -i | --image )              IMAGE=$2;                           shift; shift ;;
     -a | --archive-urls )       ARCHIVE_URLS=$2;                    shift; shift ;;
     -k | --kafka-url )          KAFKA_URL=$2;                       shift; shift ;;
+    -z | --dbz-scripts )        DEBEZIUM_VERSION=$2;                shift; shift ;;
     -l | --libs )               EXTRA_LIBS=$2;                      shift; shift ;;
     -f | --dockerfile )         DOCKER_FILE=$2;                     shift; shift ;;
     -r | --registry )           REGISTRY=$2;                        shift; shift ;;
@@ -45,7 +47,15 @@ for archive in ${ARCHIVE_URLS}; do
     echo "[Processing] ${archive}"
     curl -OJs "${archive}" && unzip \*.zip && rm *.zip
     connectors_version=$(echo "$archive" | sed -rn 's|.*AMQ-CDC-(.*)/.*$|\1|p')
+
+    if [ -z "$connectors_version" ]; then
+          echo "[Processing] unable to parse connectors version, trying different approach"
+          connectors_version=$(echo "$archive" | rev | cut -d '/' -f 1 | rev | cut -d '-' -f 2)
+    fi
+    echo "[Processing] connectors version is ${connectors_version}"
 done
+
+connector_dirs=$(ls)
 
 for input in ${EXTRA_LIBS}; do
     echo "[Processing] ${input} "
@@ -53,11 +63,21 @@ for input in ${EXTRA_LIBS}; do
     dest=$(echo ${input} |  awk -F "::"  '{print $2}' | xargs)
 
     curl -OJs "${lib}"
-    if [[ "${lib}" =~ ^.*\.zip$ ]] ; then
-        unzip -od ${dest} \*.zip && rm *.zip
-    else
-        mv *.jar "${dest}"
-    fi
+    if [[ "${dest}" == '*' ]] ; then
+            if [[ "${lib}" =~ ^.*\.zip$ ]] ; then
+                echo $connector_dirs | xargs -n 1 unzip -o \*.zip -d
+                rm *.zip
+            else
+                echo $connector_dirs | xargs -n 1 cp *.jar
+                rm *.jar
+            fi
+            continue;
+        fi
+        if [[ "${lib}" =~ ^.*\.zip$ ]] ; then
+            unzip -od "${dest}" \*.zip && rm *.zip
+        else
+            mv *.jar "${dest}"
+        fi
 done
 popd || exit
 
@@ -68,7 +88,7 @@ echo "Copying Dockerfile to" "${BUILD_DIR}"
 cp "$DOCKER_FILE" "$BUILD_DIR"
 
 amq_version=$(echo "${KAFKA_URL}" | sed -rn 's|.*AMQ-STREAMS-(.*)/.*$|\1|p')
-image_dbz=debezium-testing-rhel8
+image_dbz=dbz-rhel-kafka
 target=${REGISTRY}/${ORGANISATION}/${image_dbz}:amq-${amq_version}-dbz-${connectors_version}
 
 pushd "${BUILD_DIR}" || exit
@@ -76,7 +96,7 @@ pushd "${BUILD_DIR}" || exit
 PLUGIN_DIR_BUILDARG="./${PLUGIN_DIR##*/}"
 
 echo "[Build] Building ${image_dbz} from ${IMAGE}"
-docker build . -t "$target" --build-arg IMAGE="${IMAGE}" --build-arg KAFKA_SOURCE_PATH="${KAFKA_URL}" --build-arg DEBEZIUM_CONNECTORS="${PLUGIN_DIR_BUILDARG}" || exit
+docker build . -t "$target" --build-arg IMAGE="${IMAGE}" --build-arg KAFKA_SOURCE_PATH="${KAFKA_URL}" --build-arg DEBEZIUM_CONNECTORS="${PLUGIN_DIR_BUILDARG}" --build-arg DEBEZIUM_VERSION="${DEBEZIUM_VERSION}"|| exit
 popd || exit
 
 if [ "${AUTO_TAG}" = "true" ] ; then

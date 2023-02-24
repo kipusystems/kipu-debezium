@@ -5,6 +5,8 @@
  */
 package io.debezium.connector.mongodb.transforms;
 
+import static org.apache.kafka.connect.transforms.util.Requirements.requireStruct;
+
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -16,10 +18,6 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.apache.kafka.common.config.ConfigDef;
-import org.apache.kafka.common.config.ConfigDef.Importance;
-import org.apache.kafka.common.config.ConfigDef.Type;
-import org.apache.kafka.common.config.ConfigDef.Width;
-import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.connect.connector.ConnectRecord;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
@@ -33,11 +31,12 @@ import org.apache.kafka.connect.transforms.Transformation;
 import org.apache.kafka.connect.transforms.util.SchemaUtil;
 import org.bson.BsonBoolean;
 import org.bson.BsonDocument;
-import org.bson.BsonNull;
 import org.bson.BsonValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.debezium.config.CommonConnectorConfig;
+import io.debezium.config.CommonConnectorConfig.FieldNameAdjustmentMode;
 import io.debezium.config.Configuration;
 import io.debezium.config.EnumeratedValue;
 import io.debezium.config.Field;
@@ -47,6 +46,7 @@ import io.debezium.data.Envelope.FieldName;
 import io.debezium.data.Envelope.Operation;
 import io.debezium.pipeline.txmetadata.TransactionMonitor;
 import io.debezium.schema.FieldNameSelector;
+import io.debezium.schema.SchemaNameAdjuster;
 import io.debezium.transforms.ExtractNewRecordStateConfigDefinition;
 import io.debezium.transforms.ExtractNewRecordStateConfigDefinition.DeleteHandling;
 import io.debezium.transforms.SmtManager;
@@ -145,43 +145,14 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
             .withDescription("Delimiter to concat between field names from the input record when generating field names for the"
                     + "output record.");
 
-    public static final Field SANITIZE_FIELD_NAMES = Field.create("sanitize.field.names")
-            .withDisplayName("Sanitize field names to adhere to Avro naming conventions")
-            .withType(Type.BOOLEAN)
-            .withWidth(Width.SHORT)
-            .withImportance(Importance.LOW)
-            .withDescription("Whether field names will be sanitized to Avro naming conventions")
-            .withDefault(Boolean.FALSE);
-
-    public static final Field ADD_SOURCE_FIELDS = Field.create("add.source.fields")
-            .withDisplayName("Adds the specified fields from the 'source' field from the payload if they exist.")
-            .withType(ConfigDef.Type.LIST)
-            .withWidth(ConfigDef.Width.LONG)
-            .withImportance(ConfigDef.Importance.LOW)
-            .withDefault("")
-            .withDescription("DEPRECATED. Please use the 'add.fields' option instead. "
-                    + "Adds each field listed from the 'source' element of the payload, prefixed with __ "
-                    + "Example: 'version,connector' would add __version and __connector fields");
-
-    public static final Field OPERATION_HEADER = Field.create("operation.header")
-            .withDisplayName("Adds a message header representing the applied operation")
-            .withType(Type.BOOLEAN)
-            .withWidth(Width.SHORT)
-            .withImportance(ConfigDef.Importance.LOW)
-            .withDefault(false)
-            .withDescription("DEPRECATED. Please use the 'add.fields' option instead. "
-                    + "Adds the operation type of the change event as a header."
-                    + "Its key is '" + ExtractNewRecordStateConfigDefinition.DEBEZIUM_OPERATION_HEADER_KEY + "'");
-
+    private final ExtractField<R> beforeExtractor = new ExtractField.Value<>();
     private final ExtractField<R> afterExtractor = new ExtractField.Value<>();
-    private final ExtractField<R> patchExtractor = new ExtractField.Value<>();
+    private final ExtractField<R> updateDescriptionExtractor = new ExtractField.Value<>();
     private final ExtractField<R> keyExtractor = new ExtractField.Key<>();
 
     private MongoDataConverter converter;
     private final Flatten<R> recordFlattener = new Flatten.Value<>();
 
-    private boolean addOperationHeader;
-    private List<String> addSourceFields;
     private List<FieldReference> additionalHeaders;
     private List<FieldReference> additionalFields;
     private boolean flattenStruct;
@@ -213,10 +184,6 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
                 Headers headersToAdd = makeHeaders(additionalHeaders, (Struct) record.value());
                 headersToAdd.forEach(h -> record.headers().add(h));
             }
-            else if (addOperationHeader) {
-                LOGGER.warn("operation.header has been deprecated and is scheduled for removal.  Use add.headers instead.");
-                record.headers().addString(ExtractNewRecordStateConfigDefinition.DEBEZIUM_OPERATION_HEADER_KEY, Operation.DELETE.code());
-            }
             return newRecord(record, keyDocument, valueDocument);
         }
 
@@ -224,31 +191,28 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
             return record;
         }
 
+        final R beforeRecord = beforeExtractor.apply(record);
         final R afterRecord = afterExtractor.apply(record);
-        final R patchRecord = patchExtractor.apply(record);
+        final R updateDescriptionRecord = updateDescriptionExtractor.apply(record);
 
         if (!additionalHeaders.isEmpty()) {
             Headers headersToAdd = makeHeaders(additionalHeaders, (Struct) record.value());
             headersToAdd.forEach(h -> record.headers().add(h));
         }
-        else if (addOperationHeader) {
-            LOGGER.warn("operation.header has been deprecated and is scheduled for removal.  Use add.headers instead.");
-            record.headers().addString(ExtractNewRecordStateConfigDefinition.DEBEZIUM_OPERATION_HEADER_KEY, ((Struct) record.value()).get("op").toString());
-        }
 
-        // insert
+        // insert || replace || update with capture.mode="change_streams_update_full" or "change_streams_update_full_with_pre_image"
         if (afterRecord.value() != null) {
-            valueDocument = getInsertDocument(afterRecord, keyDocument);
+            valueDocument = getAfterFullDocument(afterRecord, keyDocument);
         }
 
         // update
-        if (afterRecord.value() == null && patchRecord.value() != null) {
-            valueDocument = getUpdateDocument(patchRecord, keyDocument);
+        if (afterRecord.value() == null && updateDescriptionRecord.value() != null) {
+            valueDocument = getPartialUpdateDocument(beforeRecord, updateDescriptionRecord, keyDocument);
         }
 
         boolean isDeletion = false;
         // delete
-        if (afterRecord.value() == null && patchRecord.value() == null) {
+        if (afterRecord.value() == null && updateDescriptionRecord.value() == null) {
             if (handleDeletes.equals(DeleteHandling.DROP)) {
                 LOGGER.trace("Delete {} arrived and requested to be dropped", record.key());
                 return null;
@@ -290,20 +254,7 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
 
             Set<Entry<String, BsonValue>> valuePairs = valueDocument.entrySet();
             for (Entry<String, BsonValue> valuePairsForSchema : valuePairs) {
-                if (valuePairsForSchema.getKey().equalsIgnoreCase("$set")) {
-                    BsonDocument val1 = BsonDocument.parse(valuePairsForSchema.getValue().toString());
-                    Set<Entry<String, BsonValue>> keyValuesForSetSchema = val1.entrySet();
-                    for (Entry<String, BsonValue> keyValuesForSetSchemaEntry : keyValuesForSetSchema) {
-                        converter.addFieldSchema(keyValuesForSetSchemaEntry, valueSchemaBuilder);
-                    }
-                }
-                else {
-                    converter.addFieldSchema(valuePairsForSchema, valueSchemaBuilder);
-                }
-            }
-
-            if (addSourceFields != null) {
-                addSourceFieldsSchema(addFieldsPrefix, addSourceFields, record, valueSchemaBuilder);
+                converter.addFieldSchema(valuePairsForSchema, valueSchemaBuilder);
             }
 
             if (!additionalFields.isEmpty()) {
@@ -313,20 +264,8 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
             finalValueSchema = valueSchemaBuilder.build();
             finalValueStruct = new Struct(finalValueSchema);
             for (Entry<String, BsonValue> valuePairsForStruct : valuePairs) {
-                if (valuePairsForStruct.getKey().equalsIgnoreCase("$set")) {
-                    BsonDocument val1 = BsonDocument.parse(valuePairsForStruct.getValue().toString());
-                    Set<Entry<String, BsonValue>> keyValueForSetStruct = val1.entrySet();
-                    for (Entry<String, BsonValue> keyValueForSetStructEntry : keyValueForSetStruct) {
-                        converter.convertRecord(keyValueForSetStructEntry, finalValueSchema, finalValueStruct);
-                    }
-                }
-                else {
-                    converter.convertRecord(valuePairsForStruct, finalValueSchema, finalValueStruct);
-                }
-            }
+                converter.convertRecord(valuePairsForStruct, finalValueSchema, finalValueStruct);
 
-            if (addSourceFields != null) {
-                addSourceFieldsValue(addSourceFields, record, finalValueStruct);
             }
 
             if (!additionalFields.isEmpty()) {
@@ -344,29 +283,10 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
         return newRecord;
     }
 
-    private void addSourceFieldsSchema(String fieldPrefix, List<String> addSourceFields, R originalRecord, SchemaBuilder valueSchemaBuilder) {
-        Schema sourceSchema = originalRecord.valueSchema().field("source").schema();
-        for (String sourceField : addSourceFields) {
-            if (sourceSchema.field(sourceField) == null) {
-                throw new ConfigException("Source field specified in 'add.source.fields' does not exist: " + sourceField);
-            }
-            valueSchemaBuilder.field(fieldPrefix + sourceField,
-                    sourceSchema.field(sourceField).schema());
-        }
-    }
-
     private void addAdditionalFieldsSchema(List<FieldReference> additionalFields, R originalRecord, SchemaBuilder valueSchemaBuilder) {
         Schema sourceSchema = originalRecord.valueSchema();
         for (FieldReference fieldReference : additionalFields) {
             valueSchemaBuilder.field(fieldReference.newFieldName, fieldReference.getSchema(sourceSchema));
-        }
-    }
-
-    private void addSourceFieldsValue(List<String> addSourceFields, R originalRecord, Struct valueStruct) {
-        Struct sourceValue = ((Struct) originalRecord.value()).getStruct("source");
-        for (String sourceField : addSourceFields) {
-            valueStruct.put(ExtractNewRecordStateConfigDefinition.METADATA_FIELD_PREFIX + sourceField,
-                    sourceValue.get(sourceField));
         }
     }
 
@@ -379,35 +299,29 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
         }
     }
 
-    private BsonDocument getUpdateDocument(R patchRecord, BsonDocument keyDocument) {
+    private BsonDocument getPartialUpdateDocument(R beforeRecord, R updateDescriptionRecord, BsonDocument keyDocument) {
         BsonDocument valueDocument = new BsonDocument();
-        BsonDocument document = BsonDocument.parse(patchRecord.value().toString());
 
-        if (document.containsKey("$set")) {
-            valueDocument = document.getDocument("$set");
+        Struct updateDescription = requireStruct(updateDescriptionRecord.value(), MongoDbFieldName.UPDATE_DESCRIPTION);
+
+        String updated = updateDescription.getString(MongoDbFieldName.UPDATED_FIELDS);
+        List<String> removed = updateDescription.getArray(MongoDbFieldName.REMOVED_FIELDS);
+
+        if (beforeRecord.value() != null) {
+            valueDocument = BsonDocument.parse(beforeRecord.value().toString());
         }
 
-        if (document.containsKey("$unset")) {
-            Set<Entry<String, BsonValue>> unsetDocumentEntry = document.getDocument("$unset").entrySet();
-
-            for (Entry<String, BsonValue> valueEntry : unsetDocumentEntry) {
-                // In case unset of a key is false we don't have to do anything with it,
-                // if it's true we want to set the value to null
-                if (!valueEntry.getValue().asBoolean().getValue()) {
-                    continue;
-                }
-                valueDocument.append(valueEntry.getKey(), new BsonNull());
+        if (updated != null) {
+            BsonDocument updatedBson = BsonDocument.parse(updated);
+            for (Entry<String, BsonValue> valueEntry : updatedBson.entrySet()) {
+                valueDocument.append(valueEntry.getKey(), valueEntry.getValue());
             }
         }
 
-        if (!document.containsKey("$set") && !document.containsKey("$unset")) {
-            if (!document.containsKey("_id")) {
-                throw new ConnectException("Unable to process Mongo Operation, a '$set' or '$unset' is necessary " +
-                        "for partial updates or '_id' is expected for full Document replaces.");
+        if (removed != null) {
+            for (String field : removed) {
+                valueDocument.keySet().remove(field);
             }
-            // In case of a full update we can use the whole Document as it is
-            // see https://docs.mongodb.com/manual/reference/method/db.collection.update/#replace-a-document-entirely
-            valueDocument = document;
         }
 
         if (!valueDocument.containsKey("_id")) {
@@ -423,7 +337,7 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
         return valueDocument;
     }
 
-    private BsonDocument getInsertDocument(R record, BsonDocument key) {
+    private BsonDocument getAfterFullDocument(R record, BsonDocument key) {
         return BsonDocument.parse(record.value().toString());
     }
 
@@ -451,8 +365,7 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
         Field.group(config, null,
                 ARRAY_ENCODING,
                 FLATTEN_STRUCT,
-                DELIMITER,
-                SANITIZE_FIELD_NAMES);
+                DELIMITER);
         return config;
     }
 
@@ -466,25 +379,22 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
         smtManager = new SmtManager<>(config);
 
         final Field.Set configFields = Field.setOf(ARRAY_ENCODING, FLATTEN_STRUCT, DELIMITER,
-                OPERATION_HEADER,
-                ADD_SOURCE_FIELDS,
                 ExtractNewRecordStateConfigDefinition.HANDLE_DELETES,
                 ExtractNewRecordStateConfigDefinition.DROP_TOMBSTONES,
                 ExtractNewRecordStateConfigDefinition.ADD_HEADERS,
-                ExtractNewRecordStateConfigDefinition.ADD_FIELDS,
-                SANITIZE_FIELD_NAMES);
+                ExtractNewRecordStateConfigDefinition.ADD_FIELDS);
 
         if (!config.validateAndRecord(configFields, LOGGER::error)) {
             throw new ConnectException("Unable to validate config.");
         }
 
+        FieldNameAdjustmentMode fieldNameAdjustmentMode = FieldNameAdjustmentMode.parse(
+                config.getString(CommonConnectorConfig.FIELD_NAME_ADJUSTMENT_MODE));
+        SchemaNameAdjuster fieldNameAdjuster = fieldNameAdjustmentMode.createAdjuster();
         converter = new MongoDataConverter(
                 ArrayEncoding.parse(config.getString(ARRAY_ENCODING)),
-                FieldNameSelector.defaultNonRelationalSelector(config.getBoolean(SANITIZE_FIELD_NAMES)), config.getBoolean(SANITIZE_FIELD_NAMES));
-
-        addOperationHeader = config.getBoolean(OPERATION_HEADER);
-
-        addSourceFields = determineAdditionalSourceField(config.getString(ADD_SOURCE_FIELDS));
+                FieldNameSelector.defaultNonRelationalSelector(fieldNameAdjuster),
+                fieldNameAdjustmentMode != FieldNameAdjustmentMode.NONE ? true : false);
 
         addFieldsPrefix = config.getString(ExtractNewRecordStateConfigDefinition.ADD_FIELDS_PREFIX);
         String addHeadersPrefix = config.getString(ExtractNewRecordStateConfigDefinition.ADD_HEADERS_PREFIX);
@@ -497,15 +407,18 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
         dropTombstones = config.getBoolean(ExtractNewRecordStateConfigDefinition.DROP_TOMBSTONES);
         handleDeletes = DeleteHandling.parse(config.getString(ExtractNewRecordStateConfigDefinition.HANDLE_DELETES));
 
+        final Map<String, String> beforeExtractorConfig = new HashMap<>();
+        beforeExtractorConfig.put("field", FieldName.BEFORE);
         final Map<String, String> afterExtractorConfig = new HashMap<>();
         afterExtractorConfig.put("field", FieldName.AFTER);
-        final Map<String, String> patchExtractorConfig = new HashMap<>();
-        patchExtractorConfig.put("field", MongoDbFieldName.PATCH);
+        final Map<String, String> updateDescriptionExtractorConfig = new HashMap<>();
+        updateDescriptionExtractorConfig.put("field", MongoDbFieldName.UPDATE_DESCRIPTION);
         final Map<String, String> keyExtractorConfig = new HashMap<>();
         keyExtractorConfig.put("field", "id");
 
+        beforeExtractor.configure(beforeExtractorConfig);
         afterExtractor.configure(afterExtractorConfig);
-        patchExtractor.configure(patchExtractorConfig);
+        updateDescriptionExtractor.configure(updateDescriptionExtractorConfig);
         keyExtractor.configure(keyExtractorConfig);
 
         final Map<String, String> delegateConfig = new HashMap<>();
@@ -551,7 +464,8 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
             else if (parts.length == 2) {
                 this.struct = parts[0];
 
-                if (!(this.struct.equals(Envelope.FieldName.SOURCE) || this.struct.equals(Envelope.FieldName.TRANSACTION))) {
+                if (!(this.struct.equals(Envelope.FieldName.SOURCE) || this.struct.equals(Envelope.FieldName.TRANSACTION)
+                        || this.struct.equals(MongoDbFieldName.UPDATE_DESCRIPTION))) {
                     throw new IllegalArgumentException("Unexpected field name: " + field);
                 }
 
@@ -568,14 +482,16 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
          */
         private static String determineStruct(String simpleFieldName) {
             if (simpleFieldName.equals(Envelope.FieldName.OPERATION) ||
-                    simpleFieldName.equals(Envelope.FieldName.TIMESTAMP) ||
-                    simpleFieldName.equals(MongoDbFieldName.PATCH)) {
+                    simpleFieldName.equals(Envelope.FieldName.TIMESTAMP)) {
                 return null;
             }
             else if (simpleFieldName.equals(TransactionMonitor.DEBEZIUM_TRANSACTION_ID_KEY) ||
                     simpleFieldName.equals(TransactionMonitor.DEBEZIUM_TRANSACTION_DATA_COLLECTION_ORDER_KEY) ||
                     simpleFieldName.equals(TransactionMonitor.DEBEZIUM_TRANSACTION_TOTAL_ORDER_KEY)) {
                 return Envelope.FieldName.TRANSACTION;
+            }
+            else if (simpleFieldName.equals(MongoDbFieldName.UPDATE_DESCRIPTION)) {
+                return MongoDbFieldName.UPDATE_DESCRIPTION;
             }
             else {
                 return Envelope.FieldName.SOURCE;

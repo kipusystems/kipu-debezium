@@ -11,21 +11,24 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
-import org.apache.kafka.connect.source.SourceRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.debezium.annotation.SingleThreadAccess;
 import io.debezium.annotation.ThreadSafe;
 import io.debezium.config.ConfigurationDefaults;
+import io.debezium.pipeline.Sizeable;
 import io.debezium.time.Temporals;
 import io.debezium.util.Clock;
 import io.debezium.util.LoggingContext;
 import io.debezium.util.LoggingContext.PreviousContext;
-import io.debezium.util.ObjectSizeCalculator;
 import io.debezium.util.Threads;
 import io.debezium.util.Threads.Timer;
 
@@ -37,7 +40,7 @@ import io.debezium.util.Threads.Timer;
  * time to sleep (block) between two subsequent poll calls. See the
  * {@link Builder} for the different options. The queue applies back-pressure
  * semantics, i.e. if it holds the maximum number of elements, subsequent calls
- * to {@link #enqueue(Object)} will block until elements have been removed from
+ * to {@link #enqueue(T)} will block until elements have been removed from
  * the queue.
  * <p>
  * If an exception occurs on the producer side, the producer should make that
@@ -49,13 +52,13 @@ import io.debezium.util.Threads.Timer;
  * @author Gunnar Morling
  *
  * @param <T>
- *            the type of events in this queue. Usually {@link SourceRecord} is
+ *            the type of events in this queue. Usually {@link Sizeable} is
  *            used, but in cases where additional metadata must be passed from
- *            producers to the consumer, a custom type wrapping source records
+ *            producers to the consumer, a custom type extending source records
  *            may be used.
  */
 @ThreadSafe
-public class ChangeEventQueue<T> implements ChangeEventQueueMetrics {
+public class ChangeEventQueue<T extends Sizeable> implements ChangeEventQueueMetrics {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ChangeEventQueue.class);
 
@@ -63,6 +66,11 @@ public class ChangeEventQueue<T> implements ChangeEventQueueMetrics {
     private final int maxBatchSize;
     private final int maxQueueSize;
     private final long maxQueueSizeInBytes;
+
+    private final Lock lock;
+    private final Condition isFull;
+    private final Condition isNotFull;
+
     private final Queue<T> queue;
     private final Supplier<PreviousContext> loggingContextSupplier;
     private final Queue<Long> sizeInBytesQueue;
@@ -86,6 +94,11 @@ public class ChangeEventQueue<T> implements ChangeEventQueueMetrics {
         this.pollInterval = pollInterval;
         this.maxBatchSize = maxBatchSize;
         this.maxQueueSize = maxQueueSize;
+
+        this.lock = new ReentrantLock();
+        this.isFull = lock.newCondition();
+        this.isNotFull = lock.newCondition();
+
         this.queue = new ArrayDeque<>(maxQueueSize);
         this.loggingContextSupplier = loggingContextSupplier;
         this.sizeInBytesQueue = new ArrayDeque<>(maxQueueSize);
@@ -93,7 +106,7 @@ public class ChangeEventQueue<T> implements ChangeEventQueueMetrics {
         this.buffering = buffering;
     }
 
-    public static class Builder<T> {
+    public static class Builder<T extends Sizeable> {
 
         private Duration pollInterval;
         private int maxQueueSize;
@@ -192,30 +205,36 @@ public class ChangeEventQueue<T> implements ChangeEventQueueMetrics {
     }
 
     protected void doEnqueue(T record) throws InterruptedException {
-        if (LOGGER.isDebugEnabled()) {
-            LOGGER.debug("Enqueuing source record '{}'", record);
+        if (LOGGER.isTraceEnabled()) {
+            LOGGER.trace("Enqueuing source record '{}'", record);
         }
 
-        synchronized (this) {
+        try {
+            this.lock.lock();
+
             while (queue.size() >= maxQueueSize || (maxQueueSizeInBytes > 0 && currentQueueSizeInBytes >= maxQueueSizeInBytes)) {
-                // notify poll() to drain queue
-                this.notify();
+                // signal poll() to drain queue
+                this.isFull.signalAll();
                 // queue size or queue sizeInBytes threshold reached, so wait a bit
-                this.wait(pollInterval.toMillis());
+                this.isNotFull.await(pollInterval.toMillis(), TimeUnit.MILLISECONDS);
             }
 
             queue.add(record);
             // If we pass a positiveLong max.queue.size.in.bytes to enable handling queue size in bytes feature
             if (maxQueueSizeInBytes > 0) {
-                long messageSize = ObjectSizeCalculator.getObjectSize(record);
+                long messageSize = record.objectSize();
                 sizeInBytesQueue.add(messageSize);
                 currentQueueSizeInBytes += messageSize;
             }
 
+            // batch size or queue sizeInBytes threshold reached
             if (queue.size() >= maxBatchSize || (maxQueueSizeInBytes > 0 && currentQueueSizeInBytes >= maxQueueSizeInBytes)) {
-                // notify poll() to start draining queue and do not wait
-                this.notify();
+                // signal poll() to start draining queue and do not wait
+                this.isFull.signalAll();
             }
+        }
+        finally {
+            this.lock.unlock();
         }
     }
 
@@ -233,26 +252,30 @@ public class ChangeEventQueue<T> implements ChangeEventQueueMetrics {
         try {
             LOGGER.debug("polling records...");
             final Timer timeout = Threads.timer(Clock.SYSTEM, Temporals.min(pollInterval, ConfigurationDefaults.RETURN_CONTROL_INTERVAL));
-            synchronized (this) {
+            try {
+                this.lock.lock();
                 List<T> records = new ArrayList<>(Math.min(maxBatchSize, queue.size()));
                 while (drainRecords(records, maxBatchSize - records.size()) < maxBatchSize
                         && (maxQueueSizeInBytes == 0 || currentQueueSizeInBytes < maxQueueSizeInBytes)
                         && !timeout.expired()) {
                     throwProducerExceptionIfPresent();
 
-                    LOGGER.debug("no records available yet, sleeping a bit...");
+                    LOGGER.debug("no records available or batch size not reached yet, sleeping a bit...");
                     long remainingTimeoutMills = timeout.remaining().toMillis();
                     if (remainingTimeoutMills > 0) {
-                        // notify doEnqueue() to resume processing (if anything is on wait())
-                        this.notify();
-                        // no records yet, so wait a bit
-                        this.wait(remainingTimeoutMills);
+                        // signal doEnqueue() to add more records
+                        this.isNotFull.signalAll();
+                        // no records available or batch size not reached yet, so wait a bit
+                        this.isFull.await(remainingTimeoutMills, TimeUnit.MILLISECONDS);
                     }
                     LOGGER.debug("checking for more records...");
                 }
-                // notify doEnqueue() to resume processing
-                this.notify();
+                // signal doEnqueue() to add more records
+                this.isNotFull.signalAll();
                 return records;
+            }
+            finally {
+                this.lock.unlock();
             }
         }
         finally {
@@ -266,7 +289,7 @@ public class ChangeEventQueue<T> implements ChangeEventQueueMetrics {
             return records.size();
         }
         int recordsToDrain = Math.min(queueSize, maxElements);
-        T[] drainedRecords = (T[]) new Object[recordsToDrain];
+        T[] drainedRecords = (T[]) new Sizeable[recordsToDrain];
         for (int i = 0; i < recordsToDrain; i++) {
             T record = queue.poll();
             drainedRecords[i] = record;

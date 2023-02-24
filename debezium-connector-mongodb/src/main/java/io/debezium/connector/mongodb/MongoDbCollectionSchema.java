@@ -13,7 +13,6 @@ import java.util.stream.Collectors;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
 import org.bson.BsonDocument;
-import org.bson.Document;
 
 import com.mongodb.client.model.changestream.ChangeStreamDocument;
 import com.mongodb.client.model.changestream.TruncatedArray;
@@ -22,8 +21,8 @@ import io.debezium.connector.mongodb.FieldSelector.FieldFilter;
 import io.debezium.data.Envelope;
 import io.debezium.data.Envelope.FieldName;
 import io.debezium.data.SchemaUtil;
-import io.debezium.schema.DataCollectionId;
 import io.debezium.schema.DataCollectionSchema;
+import io.debezium.spi.schema.DataCollectionId;
 
 /**
  * Defines the Kafka Connect {@link Schema} functionality associated with a given mongodb collection, and which can
@@ -38,19 +37,19 @@ public class MongoDbCollectionSchema implements DataCollectionSchema {
     private final Schema keySchema;
     private final Envelope envelopeSchema;
     private final Schema valueSchema;
-    private final Function<Document, Object> keyGeneratorOplog;
+    private final Function<BsonDocument, Object> keyGeneratorSnapshot;
     private final Function<BsonDocument, Object> keyGeneratorChangeStream;
-    private final Function<Document, String> valueGenerator;
+    private final Function<BsonDocument, String> valueGenerator;
 
-    public MongoDbCollectionSchema(CollectionId id, FieldFilter fieldFilter, Schema keySchema, Function<Document, Object> keyGenerator,
+    public MongoDbCollectionSchema(CollectionId id, FieldFilter fieldFilter, Schema keySchema, Function<BsonDocument, Object> keyGeneratorSnapshot,
                                    Function<BsonDocument, Object> keyGeneratorChangeStream, Envelope envelopeSchema, Schema valueSchema,
-                                   Function<Document, String> valueGenerator) {
+                                   Function<BsonDocument, String> valueGenerator) {
         this.id = id;
         this.fieldFilter = fieldFilter;
         this.keySchema = keySchema;
         this.envelopeSchema = envelopeSchema;
         this.valueSchema = valueSchema;
-        this.keyGeneratorOplog = keyGenerator != null ? keyGenerator : (Document) -> null;
+        this.keyGeneratorSnapshot = keyGeneratorSnapshot != null ? keyGeneratorSnapshot : (Document) -> null;
         this.keyGeneratorChangeStream = keyGeneratorChangeStream != null ? keyGeneratorChangeStream : (BsonDocument) -> null;
         this.valueGenerator = valueGenerator != null ? valueGenerator : (Document) -> null;
     }
@@ -74,48 +73,40 @@ public class MongoDbCollectionSchema implements DataCollectionSchema {
         return envelopeSchema;
     }
 
-    public Struct keyFromDocument(Document document) {
-        return document == null ? null : new Struct(keySchema).put("id", keyGeneratorOplog.apply(document));
+    public Struct keyFromDocumentSnapshot(BsonDocument document) {
+        return document == null ? null : new Struct(keySchema).put("id", keyGeneratorSnapshot.apply(document));
     }
 
     public Struct keyFromDocument(BsonDocument document) {
         return document == null ? null : new Struct(keySchema).put("id", keyGeneratorChangeStream.apply(document));
     }
 
-    public Struct valueFromDocumentOplog(Document document, Document filter, Envelope.Operation operation) {
+    public Struct valueFromDocumentSnapshot(BsonDocument document, Envelope.Operation operation) {
         Struct value = new Struct(valueSchema);
         switch (operation) {
             case READ:
-            case CREATE:
                 final String jsonStr = valueGenerator.apply(fieldFilter.apply(document));
                 value.put(FieldName.AFTER, jsonStr);
-                break;
-            case UPDATE:
-                final String patchStr = valueGenerator.apply(fieldFilter.apply(document));
-                value.put(MongoDbFieldName.PATCH, patchStr);
-                final String updateFilterStr = valueGenerator.apply(fieldFilter.apply(filter));
-                value.put(MongoDbFieldName.FILTER, updateFilterStr);
-                break;
-            case DELETE:
-                final String deleteFilterStr = valueGenerator.apply(fieldFilter.apply(filter));
-                value.put(MongoDbFieldName.FILTER, deleteFilterStr);
                 break;
         }
         return value;
     }
 
-    public Struct valueFromDocumentChangeStream(ChangeStreamDocument<Document> document, Envelope.Operation operation) {
+    public Struct valueFromDocumentChangeStream(ChangeStreamDocument<BsonDocument> document, Envelope.Operation operation) {
         Struct value = new Struct(valueSchema);
         switch (operation) {
             case CREATE:
-                final String jsonStr = valueGenerator.apply(fieldFilter.apply(document.getFullDocument()));
-                value.put(FieldName.AFTER, jsonStr);
+                extractFullDocument(document, value);
                 break;
             case UPDATE:
+                // Not null when full documents before change are enabled
+                if (document.getFullDocumentBeforeChange() != null) {
+                    extractFullDocumentBeforeChange(document, value);
+                }
+
                 // Not null when full documents are enabled for updates
                 if (document.getFullDocument() != null) {
-                    final String fullDocStr = valueGenerator.apply(fieldFilter.apply(document.getFullDocument()));
-                    value.put(FieldName.AFTER, fullDocStr);
+                    extractFullDocument(document, value);
                 }
 
                 if (document.getUpdateDescription() != null) {
@@ -157,9 +148,23 @@ public class MongoDbCollectionSchema implements DataCollectionSchema {
                 }
                 break;
             case DELETE:
+                // Not null when full documents before change are enabled
+                if (document.getFullDocumentBeforeChange() != null) {
+                    extractFullDocumentBeforeChange(document, value);
+                }
                 break;
         }
         return value;
+    }
+
+    private void extractFullDocument(ChangeStreamDocument<BsonDocument> document, Struct value) {
+        final String fullDocStr = valueGenerator.apply(fieldFilter.apply(document.getFullDocument()));
+        value.put(FieldName.AFTER, fullDocStr);
+    }
+
+    private void extractFullDocumentBeforeChange(ChangeStreamDocument<BsonDocument> document, Struct value) {
+        final String fullDocBeforeChangeStr = valueGenerator.apply(fieldFilter.apply(document.getFullDocumentBeforeChange()));
+        value.put(FieldName.BEFORE, fullDocBeforeChangeStr);
     }
 
     @Override

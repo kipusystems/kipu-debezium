@@ -1,4 +1,5 @@
 #! /usr/bin/env bash
+set -e
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 COPY_IMAGES=true
 REGISTRY="quay.io"
@@ -70,12 +71,24 @@ for archive in ${ARCHIVE_URLS}; do
     curl -OJs ${archive} && unzip \*.zip && rm *.zip
 done
 
+connector_dirs=$(ls)
+
 for input in ${EXTRA_LIBS}; do
-    echo "[Processing] input"
+    echo "[Processing] ${input}"
     lib=`echo ${input} | awk -F "::"  '{print $1}' | xargs`
     dest=`echo ${input} |  awk -F "::"  '{print $2}' | xargs`
 
     curl -OJs "${lib}"
+    if [[ "${dest}" == '*' ]] ; then
+        if [[ "${lib}" =~ ^.*\.zip$ ]] ; then
+            echo $connector_dirs | xargs -n 1 unzip -o \*.zip -d
+            rm *.zip
+        else
+            echo $connector_dirs | xargs -n 1 cp *.jar
+            rm *.jar
+        fi
+        continue;
+    fi
     if [[ "${lib}" =~ ^.*\.zip$ ]] ; then
         unzip -od "${dest}" \*.zip && rm *.zip
     else

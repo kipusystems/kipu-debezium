@@ -13,8 +13,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import io.debezium.testing.system.assertions.KafkaAssertions;
 import io.debezium.testing.system.fixtures.OcpClient;
 import io.debezium.testing.system.fixtures.connectors.Db2Connector;
-import io.debezium.testing.system.fixtures.databases.ocp.OcpDb2Fixture;
+import io.debezium.testing.system.fixtures.databases.ocp.OcpDb2;
 import io.debezium.testing.system.fixtures.kafka.OcpKafka;
+import io.debezium.testing.system.fixtures.operator.OcpStrimziOperator;
 import io.debezium.testing.system.tools.kafka.ConnectorConfigBuilder;
 import io.debezium.testing.system.tools.kafka.KafkaConnectController;
 import io.debezium.testing.system.tools.kafka.KafkaController;
@@ -27,8 +28,9 @@ import fixture5.annotations.Fixture;
 @Tag("db2")
 @Tag("openshift")
 @Fixture(OcpClient.class)
+@Fixture(OcpStrimziOperator.class)
 @Fixture(OcpKafka.class)
-@Fixture(OcpDb2Fixture.class)
+@Fixture(OcpDb2.class)
 @Fixture(Db2Connector.class)
 @ExtendWith(FixtureExtension.class)
 public class OcpDb2ConnectorIT extends Db2Tests {

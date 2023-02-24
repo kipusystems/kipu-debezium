@@ -1,11 +1,11 @@
 #! /usr/bin/env bash
-set -x
+set -e
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 DOCKER_FILE=${DIR}/../docker/artifact-server/Dockerfile
 PLUGIN_DIR="plugins"
 
 
-OPTS=$(getopt -o d:f:r:o:t:a: --long dir:,dockerfile:,registry:,organisation:,tags:,auto-tag:,dest-login:,dest-pass:,img-output:,oracle-included: -n 'parse-options' -- "$@")
+OPTS=$(getopt -o d:f:r:o:t:a: --long dir:,dockerfile:,registry:,organisation:,tags:,auto-tag:,dest-login:,dest-pass:,img-output:,oracle-included:,maven-repo: -n 'parse-options' -- "$@")
 if [ $? != 0 ] ; then echo "Failed parsing options." >&2 ; exit 1 ; fi
 eval set -- "$OPTS"
 
@@ -22,6 +22,7 @@ while true; do
     --dest-pass )               DEST_PASS=$2;                       shift; shift ;;
     --img-output )              IMAGE_OUTPUT_FILE=$2;               shift; shift ;;
     --oracle-included )         ORACLE=$2;                          shift; shift ;;
+    --maven-repo )              MAVEN_REPO=$2;                      shift; shift ;;
     -h | --help )               PRINT_HELP=true;                    shift ;;
     -- ) shift; break ;;
     * ) break ;;
@@ -40,21 +41,29 @@ echo "Creating plugin directory ${PLUGIN_DIR}"
 mkdir -p "${PLUGIN_DIR}"
 
 # Get debezium project version from pom.xml
-project_version=$(cat pom.xml | grep "^    <version>.*</version>$" | awk -F'[><]' '{print $3}')
+project_version=$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)
 
 pushd "${PLUGIN_DIR}" || exit
-cp ~/.m2/repository/io/debezium/debezium-connector-*/"${project_version}"/debezium-connector-*.zip .
-cp ~/.m2/repository/io/debezium/debezium-scripting/"${project_version}"/debezium-scripting-*.zip .
+cp "$MAVEN_REPO"/io/debezium/debezium-connector-*/"${project_version}"/debezium-connector-*.zip .
+cp "$MAVEN_REPO"/io/debezium/debezium-scripting/"${project_version}"/debezium-scripting-*.zip .
 mkdir jdbc
-cp ~/.m2/repository/com/ibm/db2/jcc/*/jcc-*.jar jdbc/
-cp ~/.m2/repository/io/apicurio/apicurio-registry-distro-connect-converter/*/apicurio-registry-*.zip .
+cp "$MAVEN_REPO"/com/ibm/db2/jcc/*/jcc-*.jar jdbc/
+cp "$MAVEN_REPO"/io/apicurio/apicurio-registry-distro-connect-converter/*/apicurio-registry-*.zip .
 
+# Copy groovy scripts
+mkdir groovy
+cp "$MAVEN_REPO"/org/codehaus/groovy/groovy/*/groovy-*.jar groovy/
+cp "$MAVEN_REPO"/org/codehaus/groovy/groovy-json/*/groovy-json-*.jar groovy/
+cp "$MAVEN_REPO"/org/codehaus/groovy/groovy-jsr223/*/groovy-jsr223-*.jar groovy/
+
+prefix=""
 if [ "${ORACLE}" = "false" ] ; then
   rm debezium-connector-oracle*.zip
 else
-  cp ~/.m2/repository/com/oracle/database/jdbc/ojdbc8/*/ojdbc8-*.jar jdbc/
+  cp "$MAVEN_REPO"/com/oracle/database/jdbc/ojdbc8/*/ojdbc8-*.jar jdbc/
   echo "Changing quay organisation to private rh-integration since ORACLE connector is included"
   ORGANISATION="rh_integration"
+  prefix="dbz-"
 fi
 
 popd || exit
@@ -65,7 +74,7 @@ cp "${DIR}"/../docker/artifact-server/* "$BUILD_DIR"
 echo "Copying Dockerfile to" "${BUILD_DIR}"
 cp "$DOCKER_FILE" "$BUILD_DIR"
 
-image=${REGISTRY}/${ORGANISATION}/test-artifact-server
+image=${REGISTRY}/${ORGANISATION}/${prefix}artifact-server-upstream
 target=${image}:${project_version}
 
 pushd "${BUILD_DIR}" || exit

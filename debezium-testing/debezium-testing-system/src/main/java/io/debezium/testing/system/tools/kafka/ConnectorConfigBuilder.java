@@ -34,7 +34,7 @@ public class ConnectorConfigBuilder {
     }
 
     public String getDbServerName() {
-        return connectorName.replaceAll("-", "_");
+        return connectorName.replace('-', '_');
     }
 
     public ConnectorConfigBuilder put(String key, Object value) {
@@ -44,6 +44,10 @@ public class ConnectorConfigBuilder {
 
     public Map<String, Object> get() {
         return config;
+    }
+
+    public String getAsString(String key) {
+        return String.valueOf(config.get(key));
     }
 
     public ConnectorConfigBuilder addApicurioAvroSupport(String apicurioUrl) {
@@ -57,7 +61,32 @@ public class ConnectorConfigBuilder {
         config.put("value.converter.apicurio.registry.auto-register", true);
         config.put("value.converter.apicurio.registry.find-latest", true);
 
+        config.put("schema.name.adjustment.mode", "avro");
+
         return this;
+    }
+
+    public ConnectorConfigBuilder addContentBasedRouter(String expression, String topicNamePattern) {
+        config.put("transforms", "route");
+        config.put("transforms.route.type", "io.debezium.transforms.ContentBasedRouter");
+        config.put("transforms.route.language", "jsr223.groovy");
+        config.put("transforms.route.topic.expression", expression);
+        config.put("transforms.route.predicate", "TopicPredicate");
+        config.put("predicates", "TopicPredicate");
+        config.put("predicates.TopicPredicate.type", "org.apache.kafka.connect.transforms.predicates.TopicNameMatches");
+        config.put("predicates.TopicPredicate.pattern", topicNamePattern);
+
+        return this;
+    }
+
+    public ConnectorConfigBuilder addOperationRouter(String op, String targetTopicName, String sourceTopicPattern) {
+        return addContentBasedRouter("value.op == '" + op + "' ? '" + targetTopicName + "' : null", sourceTopicPattern);
+    }
+
+    public ConnectorConfigBuilder addOperationRouterForTable(String op, String tableName) {
+        String serverName = getDbServerName();
+        String targetTopicName = serverName + "." + op + "." + tableName;
+        return addOperationRouter(op, targetTopicName, serverName + ".*\\." + tableName);
     }
 
     /**

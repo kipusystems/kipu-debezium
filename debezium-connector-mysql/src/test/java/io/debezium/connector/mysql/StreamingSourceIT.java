@@ -7,7 +7,7 @@ package io.debezium.connector.mysql;
 
 import static io.debezium.junit.EqualityCheck.LESS_THAN;
 import static io.debezium.junit.EqualityCheck.LESS_THAN_OR_EQUAL;
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -22,7 +22,9 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -54,7 +56,8 @@ import io.debezium.jdbc.JdbcConnection;
 import io.debezium.junit.SkipTestRule;
 import io.debezium.junit.SkipWhenDatabaseVersion;
 import io.debezium.junit.logging.LogInterceptor;
-import io.debezium.relational.history.DatabaseHistory;
+import io.debezium.relational.history.SchemaHistory;
+import io.debezium.schema.AbstractTopicNamingStrategy;
 import io.debezium.time.ZonedTimestamp;
 import io.debezium.util.Testing;
 
@@ -65,9 +68,9 @@ import io.debezium.util.Testing;
 @SkipWhenDatabaseVersion(check = LESS_THAN, major = 5, minor = 6, reason = "DDL uses fractional second data types, not supported until MySQL 5.6")
 public class StreamingSourceIT extends AbstractConnectorTest {
 
-    private static final Path DB_HISTORY_PATH = Testing.Files.createTestingPath("file-db-history-binlog.txt").toAbsolutePath();
+    private static final Path SCHEMA_HISTORY_PATH = Testing.Files.createTestingPath("file-schema-history-binlog.txt").toAbsolutePath();
     private final UniqueDatabase DATABASE = new UniqueDatabase("logical_server_name", "connector_test_ro")
-            .withDbHistoryPath(DB_HISTORY_PATH);
+            .withDbHistoryPath(SCHEMA_HISTORY_PATH);
 
     private static final String SET_TLS_PROTOCOLS = "database.enabledTLSProtocols";
 
@@ -83,7 +86,7 @@ public class StreamingSourceIT extends AbstractConnectorTest {
         stopConnector();
         DATABASE.createAndInitialize();
         initializeConnectorTestFramework();
-        Testing.Files.delete(DB_HISTORY_PATH);
+        Testing.Files.delete(SCHEMA_HISTORY_PATH);
 
         this.store = KeyValueStore.createForTopicsBeginningWith(DATABASE.getServerName() + ".");
         this.schemaChanges = new SchemaChangeHistory(DATABASE.getServerName());
@@ -95,7 +98,7 @@ public class StreamingSourceIT extends AbstractConnectorTest {
             stopConnector();
         }
         finally {
-            Testing.Files.delete(DB_HISTORY_PATH);
+            Testing.Files.delete(SCHEMA_HISTORY_PATH);
         }
     }
 
@@ -289,40 +292,6 @@ public class StreamingSourceIT extends AbstractConnectorTest {
     }
 
     /**
-     * Setup a DATABASE_WHITELIST filter that filters all events.
-     * Verify all events are properly filtered.
-     * Verify numberOfFilteredEvents metric is incremented correctly.
-     */
-    @Test
-    @FixFor("DBZ-1206")
-    public void shouldFilterAllRecordsBasedOnDatabaseWhitelistFilter() throws Exception {
-        // Define configuration that will ignore all events from MySQL source.
-        config = simpleConfig()
-                .with(MySqlConnectorConfig.DATABASE_WHITELIST, "db-does-not-exist")
-                .build();
-
-        // Start the connector ...
-        start(MySqlConnector.class, config);
-        waitForStreamingRunning("mysql", DATABASE.getServerName(), "streaming");
-
-        // Lets wait for at least 35 events to be filtered.
-        final int expectedFilterCount = 35;
-        final long numberFiltered = filterAtLeast(expectedFilterCount, 20, TimeUnit.SECONDS);
-
-        // All events should have been filtered.
-        assertThat(numberFiltered).isGreaterThanOrEqualTo(expectedFilterCount);
-
-        // There should be no schema changes
-        assertThat(schemaChanges.recordCount()).isEqualTo(0);
-
-        // There should be no records
-        assertThat(store.collectionCount()).isEqualTo(0);
-
-        // There should be no skipped
-        assertThat(getNumberOfSkippedEvents()).isEqualTo(0);
-    }
-
-    /**
      * Setup a DATABASE_INCLUDE_LIST filter that filters all events.
      * Verify all events are properly filtered.
      * Verify numberOfFilteredEvents metric is incremented correctly.
@@ -360,7 +329,7 @@ public class StreamingSourceIT extends AbstractConnectorTest {
     @FixFor("DBZ-183")
     public void shouldHandleTimestampTimezones() throws Exception {
         final UniqueDatabase REGRESSION_DATABASE = new UniqueDatabase("logical_server_name", "regression_test")
-                .withDbHistoryPath(DB_HISTORY_PATH);
+                .withDbHistoryPath(SCHEMA_HISTORY_PATH);
         REGRESSION_DATABASE.createAndInitialize();
 
         String tableName = "dbz_85_fractest";
@@ -397,7 +366,7 @@ public class StreamingSourceIT extends AbstractConnectorTest {
     @FixFor("DBZ-342")
     public void shouldHandleMySQLTimeCorrectly() throws Exception {
         final UniqueDatabase REGRESSION_DATABASE = new UniqueDatabase("logical_server_name", "regression_test")
-                .withDbHistoryPath(DB_HISTORY_PATH);
+                .withDbHistoryPath(SCHEMA_HISTORY_PATH);
         REGRESSION_DATABASE.createAndInitialize();
 
         String tableName = "dbz_342_timetest";
@@ -486,12 +455,12 @@ public class StreamingSourceIT extends AbstractConnectorTest {
         inconsistentSchema(EventProcessingFailureHandlingMode.SKIP);
     }
 
-    @Test(expected = DebeziumException.class)
+    @Test
     @FixFor("DBZ-1208")
     @SkipWhenDatabaseVersion(check = LESS_THAN_OR_EQUAL, major = 5, minor = 6, reason = "MySQL 5.6 does not support SSL")
     public void shouldFailOnUnknownTlsProtocol() {
         final UniqueDatabase REGRESSION_DATABASE = new UniqueDatabase("logical_server_name", "regression_test")
-                .withDbHistoryPath(DB_HISTORY_PATH);
+                .withDbHistoryPath(SCHEMA_HISTORY_PATH);
         REGRESSION_DATABASE.createAndInitialize();
 
         config = simpleConfig()
@@ -500,10 +469,16 @@ public class StreamingSourceIT extends AbstractConnectorTest {
                 .build();
 
         // Start the connector ...
-        AtomicReference<Throwable> exception = new AtomicReference<>();
-        start(MySqlConnector.class, config, (success, message, error) -> exception.set(error));
+        Map<String, Object> result = new HashMap<>();
+        start(MySqlConnector.class, config, (success, message, error) -> {
+            result.put("success", success);
+            result.put("message", message);
+        });
 
-        throw (RuntimeException) exception.get();
+        assertEquals(false, result.get("success"));
+        assertEquals(
+                "Connector configuration is not valid. Unable to connect: Specified list of TLS versions only contains non valid TLS protocols. Accepted values are TLSv1.2 and TLSv1.3.",
+                result.get("message").toString());
     }
 
     @Test
@@ -511,7 +486,7 @@ public class StreamingSourceIT extends AbstractConnectorTest {
     @SkipWhenDatabaseVersion(check = LESS_THAN_OR_EQUAL, major = 5, minor = 6, reason = "MySQL 5.6 does not support SSL")
     public void shouldAcceptTls12() throws Exception {
         final UniqueDatabase REGRESSION_DATABASE = new UniqueDatabase("logical_server_name", "regression_test")
-                .withDbHistoryPath(DB_HISTORY_PATH);
+                .withDbHistoryPath(SCHEMA_HISTORY_PATH);
         REGRESSION_DATABASE.createAndInitialize();
 
         config = simpleConfig()
@@ -535,7 +510,7 @@ public class StreamingSourceIT extends AbstractConnectorTest {
         config = simpleConfig()
                 .with(MySqlConnectorConfig.USER, "snapper")
                 .with(MySqlConnectorConfig.PASSWORD, "snapperpass")
-                .with(Heartbeat.HEARTBEAT_TOPICS_PREFIX, HEARTBEAT_TOPIC_PREFIX_VALUE)
+                .with(AbstractTopicNamingStrategy.DEFAULT_HEARTBEAT_TOPIC_PREFIX, HEARTBEAT_TOPIC_PREFIX_VALUE)
                 .with(Heartbeat.HEARTBEAT_INTERVAL, "100")
                 .with(DatabaseHeartbeatImpl.HEARTBEAT_ACTION_QUERY_PROPERTY_NAME,
                         String.format("INSERT INTO %s.test_heartbeat_table (text) VALUES ('test_heartbeat');",
@@ -574,7 +549,7 @@ public class StreamingSourceIT extends AbstractConnectorTest {
     private void inconsistentSchema(EventProcessingFailureHandlingMode mode) throws InterruptedException, SQLException {
         final LogInterceptor logInterceptor = new LogInterceptor(MySqlStreamingChangeEventSource.class);
         Configuration.Builder builder = simpleConfig()
-                .with(DatabaseHistory.STORE_ONLY_CAPTURED_TABLES_DDL, true)
+                .with(SchemaHistory.STORE_ONLY_CAPTURED_TABLES_DDL, true)
                 .with(MySqlConnectorConfig.TABLE_INCLUDE_LIST, DATABASE.qualifiedTableName("orders"));
 
         if (mode == null) {
@@ -603,10 +578,10 @@ public class StreamingSourceIT extends AbstractConnectorTest {
         start(MySqlConnector.class, config, (success, message, error) -> exception.set(error));
 
         try (
-                final MySqlTestConnection db = MySqlTestConnection.forTestDatabase(DATABASE.getDatabaseName());
-                final JdbcConnection connection = db.connect();
-                final Connection jdbc = connection.connection();
-                final Statement statement = jdbc.createStatement()) {
+                MySqlTestConnection db = MySqlTestConnection.forTestDatabase(DATABASE.getDatabaseName());
+                JdbcConnection connection = db.connect();
+                Connection jdbc = connection.connection();
+                Statement statement = jdbc.createStatement()) {
             if (mode == null) {
                 waitForStreamingRunning("mysql", DATABASE.getServerName(), "streaming");
             }
@@ -633,7 +608,7 @@ public class StreamingSourceIT extends AbstractConnectorTest {
     }
 
     private String productsTableName() throws SQLException {
-        try (final MySqlTestConnection db = MySqlTestConnection.forTestDatabase(DATABASE.getDatabaseName())) {
+        try (MySqlTestConnection db = MySqlTestConnection.forTestDatabase(DATABASE.getDatabaseName())) {
             return db.isTableIdCaseSensitive() ? "products" : "Products";
         }
     }

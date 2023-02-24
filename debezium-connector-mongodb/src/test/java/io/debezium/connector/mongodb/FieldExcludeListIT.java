@@ -7,60 +7,33 @@ package io.debezium.connector.mongodb;
 
 import static io.debezium.connector.mongodb.JsonSerialization.COMPACT_JSON_SETTINGS;
 import static io.debezium.data.Envelope.FieldName.AFTER;
-import static org.fest.assertions.Assertions.assertThat;
-import static org.fest.assertions.Fail.fail;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BiConsumer;
 
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.bson.Document;
 import org.bson.types.ObjectId;
-import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
 
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.InsertOneOptions;
 
+import io.debezium.config.CommonConnectorConfig;
+import io.debezium.config.CommonConnectorConfig.SchemaNameAdjustmentMode;
 import io.debezium.config.Configuration;
-import io.debezium.connector.mongodb.ConnectionContext.MongoPrimary;
 import io.debezium.connector.mongodb.FieldBlacklistIT.ExpectedUpdate;
-import io.debezium.embedded.AbstractConnectorTest;
+import io.debezium.doc.FixFor;
 import io.debezium.util.Testing;
 
-// todo: extend AbstractMongoConnectorIT?
-public class FieldExcludeListIT extends AbstractConnectorTest {
+public class FieldExcludeListIT extends AbstractMongoConnectorIT {
 
+    private static final String DATABASE_NAME = "dbA";
+    private static final String COLLECTION_NAME = "c1";
     private static final String SERVER_NAME = "serverX";
-    private static final String PATCH = MongoDbFieldName.PATCH;
-
-    private Configuration config;
-    private MongoDbTaskContext context;
-
-    @Before
-    public void beforeEach() {
-        Debug.disable();
-        Print.disable();
-        stopConnector();
-        initializeConnectorTestFramework();
-    }
-
-    @After
-    public void afterEach() {
-        try {
-            stopConnector();
-        }
-        finally {
-            if (context != null) {
-                context.getConnectionContext().shutdown();
-            }
-        }
-    }
 
     @Test
     public void shouldNotExcludeFieldsForEventOfOtherCollection() throws InterruptedException {
@@ -1399,11 +1372,11 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
         config = getConfiguration("*.c1.name,*.c1.active");
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, DATABASE_NAME);
 
         ObjectId objId = new ObjectId();
         Document obj = new Document("_id", objId);
-        storeDocuments("dbA", "c1", obj);
+        storeDocuments(DATABASE_NAME, COLLECTION_NAME, obj);
 
         start(MongoDbConnector.class, config);
 
@@ -1413,7 +1386,7 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
 
         // Wait for streaming to start and perform an update
         waitForStreamingRunning("mongodb", SERVER_NAME);
-        deleteDocuments("dbA", "c1", objId);
+        deleteDocuments(DATABASE_NAME, COLLECTION_NAME, objId);
 
         // Get the delete records (1 delete and 1 tombstone)
         SourceRecords deleteRecords = consumeRecordsByTopic(2);
@@ -1425,9 +1398,6 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
         Struct value = getValue(record);
 
         String json = value.getString(AFTER);
-        if (json == null) {
-            json = value.getString(PATCH);
-        }
 
         assertThat(json).isNull();
     }
@@ -1437,11 +1407,11 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
         config = getConfiguration("*.c1.name,*.c1.active");
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, DATABASE_NAME);
 
         ObjectId objId = new ObjectId();
         Document obj = new Document("_id", objId);
-        storeDocuments("dbA", "c1", obj);
+        storeDocuments(DATABASE_NAME, COLLECTION_NAME, obj);
 
         start(MongoDbConnector.class, config);
 
@@ -1451,7 +1421,7 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
 
         // Wait for streaming to start and perform an update
         waitForStreamingRunning("mongodb", SERVER_NAME);
-        deleteDocuments("dbA", "c1", objId);
+        deleteDocuments(DATABASE_NAME, COLLECTION_NAME, objId);
 
         // Get the delete records (1 delete and 1 tombstone)
         SourceRecords deleteRecords = consumeRecordsByTopic(2);
@@ -1465,11 +1435,166 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
         assertThat(value).isNull();
     }
 
+    @Test
+    @FixFor("DBZ-5328")
+    public void shouldExcludeFieldsIncludingDashesForReadEvent() throws InterruptedException {
+        ObjectId objId = new ObjectId();
+        Document obj = new Document()
+                .append("_id", objId)
+                .append("name-1", "Sally")
+                .append("phone", 123L)
+                .append("active-2", true)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6));
+
+        // @formatter:off
+        String expected = "{"
+                +     "\"_id\": {\"$oid\": \"" + objId + "\"},"
+                +     "\"phone\": {\"$numberLong\": \"123\"},"
+                +     "\"scores\": [1.2,3.4,5.6]"
+                + "}";
+        // @formatter:on
+
+        assertReadRecord("db-A", COLLECTION_NAME, "db-A.c1.name-1,*.c1.active-2", obj, AFTER, expected);
+    }
+
+    @Test
+    @FixFor("DBZ-5328")
+    public void shouldExcludeFieldsIncludingDashesForInsertEvent() throws InterruptedException {
+        ObjectId objId = new ObjectId();
+        Document obj = new Document()
+                .append("_id", objId)
+                .append("name-1", "Sally")
+                .append("phone", 123L)
+                .append("active-2", true)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6));
+
+        // @formatter:off
+        String expected = "{"
+                +     "\"_id\": {\"$oid\": \"" + objId + "\"},"
+                +     "\"phone\": {\"$numberLong\": \"123\"},"
+                +     "\"scores\": [1.2,3.4,5.6]"
+                + "}";
+        // @formatter:on
+
+        assertInsertRecord("db-A", COLLECTION_NAME, "db-A.c1.name-1,*.c1.active-2", obj, AFTER, expected);
+    }
+
+    @Test
+    @FixFor("DBZ-5328")
+    public void shouldExcludeNestedFieldsIncludingDashesForInsertEvent() throws InterruptedException {
+        ObjectId objId = new ObjectId();
+        Document obj = new Document()
+                .append("_id", objId)
+                .append("name-1", "Sally")
+                .append("phone", 123L)
+                .append("address", new Document()
+                        .append("number-3", 34L)
+                        .append("street", "Claude Debussylaan")
+                        .append("city", "Amsterdam"))
+                .append("active-2", true)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6));
+
+        // @formatter:off
+        String expected = "{"
+                +     "\"_id\": {\"$oid\": \"" + objId + "\"},"
+                +     "\"phone\": {\"$numberLong\": \"123\"},"
+                +     "\"address\": {"
+                +         "\"street\": \"Claude Debussylaan\","
+                +         "\"city\": \"Amsterdam\""
+                +     "},"
+                +     "\"scores\": [1.2,3.4,5.6]"
+                + "}";
+        // @formatter:on
+
+        assertInsertRecord("db-A", COLLECTION_NAME, "db-A.c1.name-1,*.c1.active-2,*.c1.address.number-3", obj, AFTER, expected);
+    }
+
+    @Test
+    @FixFor("DBZ-5328")
+    public void shouldExcludeFieldsIncludingDashesForUpdateEvent() throws InterruptedException {
+        ObjectId objId = new ObjectId();
+        Document obj = new Document()
+                .append("_id", objId)
+                .append("name-1", "Sally")
+                .append("phone", 456L)
+                .append("active-2", true)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6, 7.8));
+
+        Document updateObj = new Document()
+                .append("phone", 123L)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6));
+
+        // @formatter:off
+        String patch = "{"
+                +     "\"$v\": 1,"
+                +     "\"$set\": {"
+                +          "\"phone\": {\"$numberLong\": \"123\"},"
+                +          "\"scores\": [1.2,3.4,5.6]"
+                +     "}"
+                + "}";
+        String full = "{\"_id\": {\"$oid\": \"<OID>\"}, \"phone\": {\"$numberLong\": \"123\"}, \"scores\": [1.2, 3.4, 5.6]}";
+        final String updated = "{\"phone\": 123, \"scores\": [1.2, 3.4, 5.6]}";
+        // @formatter:on
+
+        assertUpdateRecord("db-A", COLLECTION_NAME, "db-A.c1.name-1,*.c1.active-2", objId, obj, updateObj, true, updateField(),
+                new ExpectedUpdate(patch, full, updated, null));
+    }
+
+    @Test
+    @FixFor("DBZ-4846")
+    public void shouldExcludeFieldsIncludingSameNamesForReadEvent() throws InterruptedException {
+        ObjectId objId = new ObjectId();
+        Document obj = new Document()
+                .append("_id", objId)
+                .append("name", "Sally")
+                .append("phone", 123L)
+                .append("active", true)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6));
+
+        // @formatter:off
+        String expected = "{"
+                +     "\"_id\": {\"$oid\": \"" + objId + "\"},"
+                +     "\"phone\": {\"$numberLong\": \"123\"},"
+                +     "\"scores\": [1.2,3.4,5.6]"
+                + "}";
+        // @formatter:on
+
+        config = TestHelper.getConfiguration(mongo).edit()
+                .with(MongoDbConnectorConfig.FIELD_EXCLUDE_LIST, "*.c1.name,*.c1.active,*.c2.name,*.c2.active")
+                .with(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST, "dbA.c1,dbA.c2")
+                .with(CommonConnectorConfig.TOPIC_PREFIX, SERVER_NAME)
+                .build();
+        context = new MongoDbTaskContext(config);
+
+        TestHelper.cleanDatabase(mongo, DATABASE_NAME);
+        storeDocuments(DATABASE_NAME, COLLECTION_NAME, obj);
+        storeDocuments(DATABASE_NAME, "c2", obj);
+
+        start(MongoDbConnector.class, config);
+
+        SourceRecords snapshotRecords = consumeRecordsByTopic(2);
+        assertThat(snapshotRecords.topics().size()).isEqualTo(2);
+        assertThat(snapshotRecords.allRecordsInOrder().size()).isEqualTo(2);
+
+        SourceRecord record1 = snapshotRecords.allRecordsInOrder().get(0);
+        Struct value1 = getValue(record1);
+        SourceRecord record2 = snapshotRecords.allRecordsInOrder().get(0);
+        Struct value2 = getValue(record2);
+
+        assertThat(value1.get(AFTER)).isEqualTo(expected);
+        assertThat(value2.get(AFTER)).isEqualTo(expected);
+    }
+
     private Configuration getConfiguration(String blackList) {
-        return TestHelper.getConfiguration().edit()
-                .with(MongoDbConnectorConfig.FIELD_EXCLUDE_LIST, blackList)
-                .with(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST, "dbA.c1")
-                .with(MongoDbConnectorConfig.LOGICAL_NAME, SERVER_NAME)
+        return getConfiguration(blackList, DATABASE_NAME, COLLECTION_NAME);
+    }
+
+    private Configuration getConfiguration(String fieldExcludeList, String database, String collection) {
+        return TestHelper.getConfiguration(mongo).edit()
+                .with(MongoDbConnectorConfig.FIELD_EXCLUDE_LIST, fieldExcludeList)
+                .with(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST, database + "." + collection)
+                .with(CommonConnectorConfig.TOPIC_PREFIX, SERVER_NAME)
+                .with(CommonConnectorConfig.SCHEMA_NAME_ADJUSTMENT_MODE, SchemaNameAdjustmentMode.AVRO)
                 .build();
     }
 
@@ -1477,25 +1602,10 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
         return (Struct) record.value();
     }
 
-    private BiConsumer<String, Throwable> connectionErrorHandler(int numErrorsBeforeFailing) {
-        AtomicInteger attempts = new AtomicInteger();
-        return (desc, error) -> {
-            if (attempts.incrementAndGet() > numErrorsBeforeFailing) {
-                fail("Unable to connect to primary after " + numErrorsBeforeFailing + " errors trying to " + desc + ": " + error);
-            }
-            logger.error("Error while attempting to {}: {}", desc, error.getMessage(), error);
-        };
-    }
-
-    private MongoPrimary primary() {
-        ReplicaSet replicaSet = ReplicaSet.parse(context.getConnectionContext().hosts());
-        return context.getConnectionContext().primaryFor(replicaSet, context.filters(), connectionErrorHandler(3));
-    }
-
     private void storeDocuments(String dbName, String collectionName, Document... documents) {
-        primary().execute("store documents", mongo -> {
+        try (var client = connect()) {
             Testing.debug("Storing in '" + dbName + "." + collectionName + "' document");
-            MongoDatabase db = mongo.getDatabase(dbName);
+            MongoDatabase db = client.getDatabase(dbName);
             MongoCollection<Document> coll = db.getCollection(collectionName);
             coll.drop();
 
@@ -1505,33 +1615,39 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
                 assertThat(document.size()).isGreaterThan(0);
                 coll.insertOne(document, insertOptions);
             }
-        });
+        }
     }
 
     private void updateDocuments(String dbName, String collectionName, ObjectId objId, Document document, boolean doSet) {
-        primary().execute("update", mongo -> {
-            MongoDatabase db = mongo.getDatabase(dbName);
+        try (var client = connect()) {
+            MongoDatabase db = client.getDatabase(dbName);
             MongoCollection<Document> coll = db.getCollection(collectionName);
             Document filter = Document.parse("{\"_id\": {\"$oid\": \"" + objId + "\"}}");
             coll.updateOne(filter, new Document().append(doSet ? "$set" : "$unset", document));
-        });
+        }
     }
 
     private void deleteDocuments(String dbName, String collectionName, ObjectId objId) {
-        primary().execute("delete", mongo -> {
-            MongoDatabase db = mongo.getDatabase(dbName);
+        try (var client = connect()) {
+            MongoDatabase db = client.getDatabase(dbName);
             MongoCollection<Document> coll = db.getCollection(collectionName);
             Document filter = Document.parse("{\"_id\": {\"$oid\": \"" + objId + "\"}}");
             coll.deleteOne(filter);
-        });
+        }
     }
 
     private void assertReadRecord(String blackList, Document snapshotRecord, String field, String expected) throws InterruptedException {
-        config = getConfiguration(blackList);
+        assertReadRecord(DATABASE_NAME, COLLECTION_NAME, blackList, snapshotRecord, field, expected);
+    }
+
+    private void assertReadRecord(String dbName, String collectionName, String blackList, Document snapshotRecord,
+                                  String field, String expected)
+            throws InterruptedException {
+        config = getConfiguration(blackList, dbName, collectionName);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
-        storeDocuments("dbA", "c1", snapshotRecord);
+        TestHelper.cleanDatabase(mongo, dbName);
+        storeDocuments(dbName, collectionName, snapshotRecord);
 
         start(MongoDbConnector.class, config);
 
@@ -1546,15 +1662,21 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
     }
 
     private void assertInsertRecord(String blackList, Document insertRecord, String field, String expected) throws InterruptedException {
-        config = getConfiguration(blackList);
+        assertInsertRecord(DATABASE_NAME, COLLECTION_NAME, blackList, insertRecord, field, expected);
+    }
+
+    private void assertInsertRecord(String dbName, String collectionName, String blackList, Document insertRecord,
+                                    String field, String expected)
+            throws InterruptedException {
+        config = getConfiguration(blackList, dbName, collectionName);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, dbName);
 
         start(MongoDbConnector.class, config);
         waitForSnapshotToBeCompleted("mongodb", SERVER_NAME);
 
-        storeDocuments("dbA", "c1", insertRecord);
+        storeDocuments(dbName, collectionName, insertRecord);
 
         // Get the insert records
         SourceRecords insertRecords = consumeRecordsByTopic(1);
@@ -1576,12 +1698,19 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
     private void assertUpdateRecord(String blackList, ObjectId objectId, Document snapshotRecord, Document updateRecord,
                                     boolean doSet, String field, ExpectedUpdate expected)
             throws InterruptedException {
-        config = getConfiguration(blackList);
+        assertUpdateRecord(DATABASE_NAME, COLLECTION_NAME, blackList, objectId, snapshotRecord, updateRecord, doSet, field, expected);
+    }
+
+    private void assertUpdateRecord(String dbName, String collectionName, String blackList, ObjectId objectId,
+                                    Document snapshotRecord, Document updateRecord, boolean doSet, String field,
+                                    ExpectedUpdate expected)
+            throws InterruptedException {
+        config = getConfiguration(blackList, dbName, collectionName);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, dbName);
 
-        storeDocuments("dbA", "c1", snapshotRecord);
+        storeDocuments(dbName, collectionName, snapshotRecord);
 
         start(MongoDbConnector.class, config);
 
@@ -1592,7 +1721,7 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
 
         // Wait for streaming to start and perform an update
         waitForStreamingRunning("mongodb", SERVER_NAME);
-        updateDocuments("dbA", "c1", objectId, updateRecord, doSet);
+        updateDocuments(dbName, collectionName, objectId, updateRecord, doSet);
 
         // Get the update records
         SourceRecords updateRecords = consumeRecordsByTopic(1);
@@ -1602,18 +1731,11 @@ public class FieldExcludeListIT extends AbstractConnectorTest {
         SourceRecord record = updateRecords.allRecordsInOrder().get(0);
         Struct value = getValue(record);
 
-        if (TestHelper.isOplogCaptureMode()) {
-            Document expectedDoc = TestHelper.getDocumentWithoutLanguageVersion(expected.patch);
-            Document actualDoc = TestHelper.getDocumentWithoutLanguageVersion(value.getString(field));
-            assertThat(actualDoc).isEqualTo(expectedDoc);
-        }
-        else {
-            TestHelper.assertChangeStreamUpdateAsDocs(objectId, value, expected.full, expected.removedFields,
-                    expected.updatedFields);
-        }
+        TestHelper.assertChangeStreamUpdateAsDocs(objectId, value, expected.full, expected.removedFields,
+                expected.updatedFields);
     }
 
     private String updateField() {
-        return TestHelper.isOplogCaptureMode() ? PATCH : AFTER;
+        return AFTER;
     }
 }

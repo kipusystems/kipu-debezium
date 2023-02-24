@@ -5,9 +5,10 @@
  */
 package io.debezium.relational.history;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.sql.Types;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -17,12 +18,14 @@ import org.junit.Test;
 import io.debezium.document.Array;
 import io.debezium.document.Document;
 import io.debezium.document.DocumentReader;
+import io.debezium.relational.Attribute;
 import io.debezium.relational.Column;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
 import io.debezium.relational.history.TableChanges.TableChangesSerializer;
+import io.debezium.schema.SchemaNameAdjuster;
+import io.debezium.util.Clock;
 import io.debezium.util.Collect;
-import io.debezium.util.SchemaNameAdjuster;
 
 /**
  * @author Randall Hauch
@@ -71,24 +74,28 @@ public class HistoryRecordTest {
                         .create())
                 .setPrimaryKeyNames("first")
                 .setComment("table comment")
+                .addAttribute(Attribute.editor().name("object_id").value("12345").create())
+                .addAttribute(Attribute.editor().name("other").value("test").create())
                 .create();
 
         TableChanges tableChanges = new TableChanges().create(table);
+        Instant timestamp = Clock.SYSTEM.currentTimeAsInstant();
 
-        HistoryRecord record = new HistoryRecord(source, position, databaseName, schemaName, ddl, tableChanges);
+        HistoryRecord record = new HistoryRecord(source, position, databaseName, schemaName, ddl, tableChanges, timestamp);
 
         String serialized = record.toString();
         DocumentReader reader = DocumentReader.defaultReader();
         HistoryRecord deserialized = new HistoryRecord(reader.read(serialized));
 
-        assertThat(deserialized.source()).isNotNull();
+        assertThat((Comparable<Document>) deserialized.source()).isNotNull();
         assertThat(deserialized.source().get("server")).isEqualTo("abc");
 
-        assertThat(deserialized.position()).isNotNull();
+        assertThat((Comparable<Document>) deserialized.position()).isNotNull();
         assertThat(deserialized.position().get("file")).isEqualTo("x.log");
         assertThat(deserialized.position().get("positionInt")).isEqualTo(100);
         assertThat(deserialized.position().get("positionLong")).isEqualTo(Long.MAX_VALUE);
         assertThat(deserialized.position().get("entry")).isEqualTo(1);
+        assertThat(deserialized.timestamp()).isEqualTo(timestamp.toEpochMilli());
 
         assertThat(deserialized.databaseName()).isEqualTo(databaseName);
         assertThat(deserialized.schemaName()).isEqualTo(schemaName);
@@ -101,7 +108,15 @@ public class HistoryRecordTest {
                 .get(1).asDocument();
 
         assertThat(secondColumn.get("defaultValueExpression")).isEqualTo("1");
-        // System.out.println(record);
+
+        Document firstAttribute = deserialized.tableChanges()
+                .get(0).asDocument()
+                .getDocument("table")
+                .getArray("attributes")
+                .get(0).asDocument();
+
+        assertThat(firstAttribute.get("name")).isEqualTo("object_id");
+        assertThat(firstAttribute.get("value")).isEqualTo("12345");
 
         final TableChangesSerializer<Array> tableChangesSerializer = new JsonTableChangeSerializer();
         assertThat((Object) tableChangesSerializer.deserialize(deserialized.tableChanges(), true)).isEqualTo(tableChanges);
@@ -112,5 +127,8 @@ public class HistoryRecordTest {
         assertThat(tableStruct.get(ConnectTableChangeSerializer.COMMENT_KEY)).isEqualTo("table comment");
         List<Struct> columnStructs = (List<Struct>) tableStruct.get(ConnectTableChangeSerializer.COLUMNS_KEY);
         assertThat(columnStructs.get(0).get(ConnectTableChangeSerializer.COMMENT_KEY)).isEqualTo("first comment");
+        assertThat(columnStructs.get(0).get(ConnectTableChangeSerializer.ENUM_VALUES)).isNull();
+        assertThat(columnStructs.get(1).get(ConnectTableChangeSerializer.DEFAULT_VALUE_EXPRESSION)).isEqualTo("1");
+        assertThat(columnStructs.get(1).get(ConnectTableChangeSerializer.ENUM_VALUES)).isEqualTo(Collect.arrayListOf("1", "2"));
     }
 }

@@ -5,7 +5,7 @@
  */
 package io.debezium.connector.mongodb;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
 
@@ -28,7 +28,7 @@ public class CloudEventsConverterIT extends AbstractMongoConnectorIT {
     @Test
     public void testCorrectFormat() throws Exception {
         Testing.Print.enable();
-        config = TestHelper.getConfiguration()
+        config = TestHelper.getConfiguration(mongo)
                 .edit()
                 .with(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST, "dbA.c1")
                 .with(MongoDbConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL)
@@ -36,7 +36,7 @@ public class CloudEventsConverterIT extends AbstractMongoConnectorIT {
 
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
 
         start(MongoDbConnector.class, config);
         assertConnectorIsRunning();
@@ -72,20 +72,11 @@ public class CloudEventsConverterIT extends AbstractMongoConnectorIT {
         }
 
         CloudEventsConverterTest.shouldConvertToCloudEventsInJson(deleteRecord, false);
-        if (TestHelper.isOplogCaptureMode()) {
-            CloudEventsConverterTest.shouldConvertToCloudEventsInJsonWithDataAsAvro(deleteRecord, "filter", false);
-        }
         CloudEventsConverterTest.shouldConvertToCloudEventsInAvro(deleteRecord, "mongodb", "mongo1", false);
 
         CloudEventsConverterTest.shouldConvertToCloudEventsInJson(updateRecord, false);
-        if (TestHelper.isOplogCaptureMode()) {
-            CloudEventsConverterTest.shouldConvertToCloudEventsInJsonWithDataAsAvro(updateRecord, "filter", false);
-            CloudEventsConverterTest.shouldConvertToCloudEventsInJsonWithDataAsAvro(updateRecord, "patch", false);
-        }
-        else {
-            CloudEventsConverterTest.shouldConvertToCloudEventsInJsonWithDataAsAvro(updateRecord, MongoDbFieldName.UPDATE_DESCRIPTION, false);
-            CloudEventsConverterTest.shouldConvertToCloudEventsInJsonWithDataAsAvro(updateRecord, Envelope.FieldName.AFTER, false);
-        }
+        CloudEventsConverterTest.shouldConvertToCloudEventsInJsonWithDataAsAvro(updateRecord, MongoDbFieldName.UPDATE_DESCRIPTION, false);
+        CloudEventsConverterTest.shouldConvertToCloudEventsInJsonWithDataAsAvro(updateRecord, Envelope.FieldName.AFTER, false);
         CloudEventsConverterTest.shouldConvertToCloudEventsInAvro(updateRecord, "mongodb", "mongo1", false);
 
         stopConnector();

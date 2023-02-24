@@ -7,7 +7,7 @@ package io.debezium.connector.oracle.logminer.processor;
 
 import static io.debezium.config.CommonConnectorConfig.DEFAULT_MAX_BATCH_SIZE;
 import static io.debezium.config.CommonConnectorConfig.DEFAULT_MAX_QUEUE_SIZE;
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 
@@ -27,6 +27,7 @@ import org.mockito.Mockito;
 
 import io.debezium.config.Configuration;
 import io.debezium.connector.base.ChangeEventQueue;
+import io.debezium.connector.oracle.CommitScn;
 import io.debezium.connector.oracle.OracleConnection;
 import io.debezium.connector.oracle.OracleConnectorConfig;
 import io.debezium.connector.oracle.OracleDatabaseSchema;
@@ -35,7 +36,6 @@ import io.debezium.connector.oracle.OracleOffsetContext;
 import io.debezium.connector.oracle.OraclePartition;
 import io.debezium.connector.oracle.OracleStreamingChangeEventSourceMetrics;
 import io.debezium.connector.oracle.OracleTaskContext;
-import io.debezium.connector.oracle.OracleTopicSelector;
 import io.debezium.connector.oracle.OracleValueConverters;
 import io.debezium.connector.oracle.Scn;
 import io.debezium.connector.oracle.StreamingAdapter.TableNameCaseSensitivity;
@@ -50,8 +50,9 @@ import io.debezium.pipeline.source.spi.ChangeEventSource.ChangeEventSourceContex
 import io.debezium.relational.Column;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
-import io.debezium.schema.TopicSelector;
-import io.debezium.util.SchemaNameAdjuster;
+import io.debezium.schema.SchemaNameAdjuster;
+import io.debezium.schema.SchemaTopicNamingStrategy;
+import io.debezium.spi.topic.TopicNamingStrategy;
 
 /**
  * Abstract class implementation for all unit tests for {@link LogMinerEventProcessor} implementations.
@@ -83,6 +84,8 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
         this.dispatcher = (EventDispatcher<OraclePartition, TableId>) Mockito.mock(EventDispatcher.class);
         this.partition = Mockito.mock(OraclePartition.class);
         this.offsetContext = Mockito.mock(OracleOffsetContext.class);
+        final CommitScn commitScn = CommitScn.valueOf((String) null);
+        Mockito.when(this.offsetContext.getCommitScn()).thenReturn(commitScn);
         this.connection = createOracleConnection();
         this.schema = createOracleDatabaseSchema();
         this.metrics = createMetrics(schema);
@@ -129,7 +132,7 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     @Test
     public void testCacheIsEmptyWhenTransactionIsCommitted() throws Exception {
         final OracleConnectorConfig config = new OracleConnectorConfig(getConfig().build());
-        final OraclePartition partition = new OraclePartition(config.getLogicalName());
+        final OraclePartition partition = new OraclePartition(config.getLogicalName(), config.getDatabaseName());
         try (T processor = getProcessor(config)) {
             final LogMinerEventRow insertRow = getInsertLogMinerEventRow(Scn.valueOf(2L), TRANSACTION_ID_1);
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(1L), TRANSACTION_ID_1));
@@ -183,7 +186,7 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     @Test
     public void testCalculateScnWhenTransactionIsCommitted() throws Exception {
         final OracleConnectorConfig config = new OracleConnectorConfig(getConfig().build());
-        final OraclePartition partition = new OraclePartition(config.getLogicalName());
+        final OraclePartition partition = new OraclePartition(config.getLogicalName(), config.getDatabaseName());
         try (T processor = getProcessor(config)) {
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(1L), TRANSACTION_ID_1));
             processor.handleDataEvent(getInsertLogMinerEventRow(Scn.valueOf(2L), TRANSACTION_ID_1));
@@ -196,7 +199,7 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     @Test
     public void testCalculateScnWhenFirstTransactionIsCommitted() throws Exception {
         final OracleConnectorConfig config = new OracleConnectorConfig(getConfig().build());
-        final OraclePartition partition = new OraclePartition(config.getLogicalName());
+        final OraclePartition partition = new OraclePartition(config.getLogicalName(), config.getDatabaseName());
         try (T processor = getProcessor(config)) {
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(1L), TRANSACTION_ID_1));
             processor.handleDataEvent(getInsertLogMinerEventRow(Scn.valueOf(2L), TRANSACTION_ID_1));
@@ -215,7 +218,7 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     @Test
     public void testCalculateScnWhenSecondTransactionIsCommitted() throws Exception {
         final OracleConnectorConfig config = new OracleConnectorConfig(getConfig().build());
-        final OraclePartition partition = new OraclePartition(config.getLogicalName());
+        final OraclePartition partition = new OraclePartition(config.getLogicalName(), config.getDatabaseName());
         try (T processor = getProcessor(config)) {
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(1L), TRANSACTION_ID_1));
             processor.handleDataEvent(getInsertLogMinerEventRow(Scn.valueOf(2L), TRANSACTION_ID_1));
@@ -270,8 +273,8 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
 
     private OracleDatabaseSchema createOracleDatabaseSchema() throws Exception {
         final OracleConnectorConfig connectorConfig = new OracleConnectorConfig(getConfig().build());
-        final TopicSelector<TableId> topicSelector = OracleTopicSelector.defaultSelector(connectorConfig);
-        final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjustmentMode().createAdjuster();
+        final TopicNamingStrategy topicNamingStrategy = SchemaTopicNamingStrategy.create(connectorConfig);
+        final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjuster();
         final OracleValueConverters converters = new OracleValueConverters(connectorConfig, connection);
         final OracleDefaultValueConverter defaultValueConverter = new OracleDefaultValueConverter(converters, connection);
         final TableNameCaseSensitivity sensitivity = connectorConfig.getAdapter().getTableNameCaseSensitivity(connection);
@@ -280,7 +283,7 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
                 converters,
                 defaultValueConverter,
                 schemaNameAdjuster,
-                topicSelector,
+                topicNamingStrategy,
                 sensitivity);
 
         Table table = Table.editor()

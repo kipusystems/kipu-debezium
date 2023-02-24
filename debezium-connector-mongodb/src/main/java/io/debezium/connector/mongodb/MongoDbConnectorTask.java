@@ -5,7 +5,6 @@
  */
 package io.debezium.connector.mongodb;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -24,16 +23,15 @@ import io.debezium.config.Configuration;
 import io.debezium.config.Field;
 import io.debezium.connector.base.ChangeEventQueue;
 import io.debezium.connector.common.BaseSourceTask;
-import io.debezium.connector.mongodb.MongoDbConnectorConfig.CaptureMode;
 import io.debezium.connector.mongodb.metrics.MongoDbChangeEventSourceMetricsFactory;
 import io.debezium.pipeline.ChangeEventSourceCoordinator;
 import io.debezium.pipeline.DataChangeEvent;
 import io.debezium.pipeline.ErrorHandler;
 import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.spi.Offsets;
+import io.debezium.schema.SchemaNameAdjuster;
 import io.debezium.util.Clock;
 import io.debezium.util.LoggingContext.PreviousContext;
-import io.debezium.util.SchemaNameAdjuster;
 
 /**
  * A Kafka Connect source task that replicates the changes from one or more MongoDB replica sets.
@@ -71,47 +69,17 @@ public final class MongoDbConnectorTask extends BaseSourceTask<MongoDbPartition,
     @Override
     public ChangeEventSourceCoordinator<MongoDbPartition, MongoDbOffsetContext> start(Configuration config) {
         final MongoDbConnectorConfig connectorConfig = new MongoDbConnectorConfig(config);
-        final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjustmentMode().createAdjuster();
+        final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjuster();
 
         this.taskName = "task" + config.getInteger(MongoDbConnectorConfig.TASK_ID);
         this.taskContext = new MongoDbTaskContext(config);
 
         final Schema structSchema = connectorConfig.getSourceInfoStructMaker().schema();
-        this.schema = new MongoDbSchema(taskContext.filters(), taskContext.topicSelector(), structSchema, schemaNameAdjuster);
+        this.schema = new MongoDbSchema(taskContext.filters(), taskContext.topicNamingStrategy(), structSchema, schemaNameAdjuster);
 
         final ReplicaSets replicaSets = getReplicaSets(config);
         final MongoDbOffsetContext previousOffset = getPreviousOffset(connectorConfig, replicaSets);
         final Clock clock = Clock.system();
-
-        if (previousOffset != null) {
-            final List<ReplicaSetOffsetContext> oplogBasedOffsets = new ArrayList<>();
-            final List<ReplicaSetOffsetContext> changeStreamBasedOffsets = new ArrayList<>();
-            replicaSets.all().forEach(rs -> {
-                final ReplicaSetOffsetContext offset = previousOffset.getReplicaSetOffsetContext(rs);
-                if (rs == null) {
-                    return;
-                }
-                if (offset.isFromChangeStream()) {
-                    changeStreamBasedOffsets.add(offset);
-                }
-                if (offset.isFromOplog()) {
-                    oplogBasedOffsets.add(offset);
-                }
-            });
-            if (!oplogBasedOffsets.isEmpty() && !changeStreamBasedOffsets.isEmpty()) {
-                LOGGER.error(
-                        "Replica set offsets are partially from oplog and partially from change streams. This is not supported situation and can lead to unpredicable behaviour.");
-            }
-            else if (!oplogBasedOffsets.isEmpty() && taskContext.getCaptureMode().isChangeStreams()) {
-                LOGGER.info("Stored offsets were created using oplog capturing, trying to switch to change streams.");
-            }
-            else if (!changeStreamBasedOffsets.isEmpty() && !taskContext.getCaptureMode().isChangeStreams()) {
-                LOGGER.warn("Stored offsets were created using change streams capturing. Connector configuration expects oplog capturing.");
-                LOGGER.warn("Switching configuration to '{}'", CaptureMode.CHANGE_STREAMS_UPDATE_FULL);
-                LOGGER.warn("Either reconfigure the connector or remove the old offsets");
-                taskContext.overrideCaptureMode(CaptureMode.CHANGE_STREAMS_UPDATE_FULL);
-            }
-        }
 
         PreviousContext previousLogContext = taskContext.configureLoggingContext(taskName);
 
@@ -131,7 +99,7 @@ public final class MongoDbConnectorTask extends BaseSourceTask<MongoDbPartition,
 
             final EventDispatcher<MongoDbPartition, CollectionId> dispatcher = new EventDispatcher<>(
                     connectorConfig,
-                    taskContext.topicSelector(),
+                    taskContext.topicNamingStrategy(),
                     schema,
                     queue,
                     taskContext.filters().collectionFilter()::test,
@@ -195,7 +163,7 @@ public final class MongoDbConnectorTask extends BaseSourceTask<MongoDbPartition,
         Collection<Map<String, String>> partitions = loader.getPartitions();
 
         Map<Map<String, String>, Map<String, Object>> offsets = context.offsetStorageReader().offsets(partitions);
-        if (offsets != null && !offsets.values().stream().filter(Objects::nonNull).collect(Collectors.toList()).isEmpty()) {
+        if (offsets != null && offsets.values().stream().anyMatch(Objects::nonNull)) {
             MongoDbOffsetContext offsetContext = loader.loadOffsets(offsets);
             logger.info("Found previous offsets {}", offsetContext);
             return offsetContext;
@@ -212,5 +180,10 @@ public final class MongoDbConnectorTask extends BaseSourceTask<MongoDbPartition,
             throw new ConnectException("Unable to start MongoDB connector task since no replica sets were found at " + hosts);
         }
         return replicaSets;
+    }
+
+    @Override
+    protected Configuration withMaskedSensitiveOptions(Configuration config) {
+        return super.withMaskedSensitiveOptions(config).withMasked(MongoDbConnectorConfig.CONNECTION_STRING.name());
     }
 }

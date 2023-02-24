@@ -17,6 +17,7 @@ import io.debezium.pipeline.source.spi.EventMetadataProvider;
  * @author Chris Cranford
  */
 public class MongoDbChangeEventSourceMetricsFactory extends DefaultChangeEventSourceMetricsFactory<MongoDbPartition> {
+
     @Override
     public <T extends CdcSourceTaskContext> SnapshotChangeEventSourceMetrics<MongoDbPartition> getSnapshotMetrics(T taskContext,
                                                                                                                   ChangeEventQueueMetrics changeEventQueueMetrics,

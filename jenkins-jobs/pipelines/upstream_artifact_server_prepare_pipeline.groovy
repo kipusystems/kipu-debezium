@@ -38,13 +38,10 @@ pipeline {
             steps {
                 script {
 //                    Configure images if provided
-                    env.IMAGE_TAG_SUFFIX="${BUILD_NUMBER}"
+                    env.IMAGE_TAG_SUFFIX = "${BUILD_NUMBER}"
 
-//                    Oracle Configuration
-                    env.ORACLE_ARTIFACT_VERSION='21.1.0.0'
-                    env.ORACLE_ARTIFACT_DIR = "${env.HOME}/oracle-libs/21.1.0.0.0"
 //                    Apicurio version
-                    env.APICURIO_ARTIFACT_VERSION="${APICURIO_VERSION}"
+                    env.APICURIO_ARTIFACT_VERSION = "${APICURIO_VERSION}"
                 }
                 withCredentials([
                         usernamePassword(credentialsId: "${QUAY_CREDENTIALS}", usernameVariable: 'QUAY_USERNAME', passwordVariable: 'QUAY_PASSWORD'),
@@ -52,10 +49,20 @@ pipeline {
                 ]) {
                     sh '''
                     set -x
-                    mvn org.apache.maven.plugins:maven-dependency-plugin:2.8:get -Dartifact=io.apicurio:apicurio-registry-distro-connect-converter:${APICURIO_ARTIFACT_VERSION}:zip
+                    cd ${WORKSPACE}/debezium
+                    ORACLE_ARTIFACT_VERSION=$( mvn -q -DforceStdout help:evaluate -Dexpression=version.oracle.driver)
+                    ORACLE_ARTIFACT_DIR="${HOME}/oracle-libs/${ORACLE_ARTIFACT_VERSION}.0"
+
+                    mvn org.apache.maven.plugins:maven-dependency-plugin:2.8:get \\
+                     -Dartifact=io.apicurio:apicurio-registry-distro-connect-converter:${APICURIO_ARTIFACT_VERSION}:zip \\
+                     -Dmaven.repo.local=${WORKSPACE}/debezium/local-maven-repo
                     cd ${ORACLE_ARTIFACT_DIR}
-                    mvn install:install-file -DgroupId=com.oracle.instantclient -DartifactId=ojdbc8 -Dversion=${ORACLE_ARTIFACT_VERSION} -Dpackaging=jar -Dfile=ojdbc8.jar
-                    mvn install:install-file -DgroupId=com.oracle.instantclient -DartifactId=xstreams -Dversion=${ORACLE_ARTIFACT_VERSION} -Dpackaging=jar -Dfile=xstreams.jar
+                    mvn install:install-file -DgroupId=com.oracle.instantclient -DartifactId=ojdbc8 \\
+                     -Dversion=${ORACLE_ARTIFACT_VERSION} -Dpackaging=jar -Dfile=ojdbc8.jar \\
+                     -Dmaven.repo.local=${WORKSPACE}/debezium/local-maven-repo
+                    mvn install:install-file -DgroupId=com.oracle.instantclient -DartifactId=xstreams \\
+                     -Dversion=${ORACLE_ARTIFACT_VERSION} -Dpackaging=jar -Dfile=xstreams.jar \\
+                     -Dmaven.repo.local=${WORKSPACE}/debezium/local-maven-repo
                     '''
                 }
             }
@@ -67,19 +74,19 @@ pipeline {
                 sh '''
                 set -x
                 cd "${WORKSPACE}/debezium"
-                mvn clean install -DskipTests -DskipITs
+                mvn clean install -DskipTests -DskipITs -Dmaven.repo.local=local-maven-repo
                 '''
 //              Build Oracle connector
                 sh '''
                 set -x
                 cd ${WORKSPACE}/debezium
-                mvn install -Passembly,oracle -DskipTests -DskipITs 
+                mvn install -Passembly,oracle-all -DskipTests -DskipITs -Dmaven.repo.local=local-maven-repo
                 '''
 //              Build DB2 Connector
                 sh '''
                 set -x
                 cd ${WORKSPACE}/debezium-connector-db2
-                mvn clean install -DskipTests -DskipITs -Passembly
+                mvn clean install -DskipTests -DskipITs -Passembly -Dmaven.repo.local=${WORKSPACE}/debezium/local-maven-repo
                 '''
             }
         }
@@ -116,7 +123,8 @@ pipeline {
                         --dest-login="${QUAY_USERNAME}"                             \\
                         --dest-pass="${QUAY_PASSWORD}"                              \\
                         --img-output="${WORKSPACE}/published_image_dbz.txt"         \\
-                        --oracle-included="${ORACLE_INCLUDED}"
+                        --oracle-included="${ORACLE_INCLUDED}"                      \\
+                        --maven-repo=${WORKSPACE}/debezium/local-maven-repo
                     '''
                 }
             }
@@ -125,8 +133,8 @@ pipeline {
 
     post {
         always {
-            mail to: MAIL_TO, subject: "Debezium upstream artifact server preparation #${BUILD_NUMBER} finished", body: """
-${currentBuild.projectName} run ${BUILD_URL} finished with result: ${currentBuild.currentResult}
+            mail to: params.MAIL_TO, subject: "Debezium upstream artifact server preparation #${env.BUILD_NUMBER} finished with ${currentBuild.currentResult}", body: """
+${currentBuild.projectName} run ${env.BUILD_URL} finished with result: ${currentBuild.currentResult}
 """
         }
         success {

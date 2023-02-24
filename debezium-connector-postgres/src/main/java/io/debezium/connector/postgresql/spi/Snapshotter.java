@@ -69,7 +69,7 @@ public interface Snapshotter {
     /**
      * Return a new string that set up the transaction for snapshotting
      *
-     * @param newSlotInfo if a new slow was created for snapshotting, this contains information from
+     * @param newSlotInfo if a new slot was created for snapshotting, this contains information from
      *                    the `create_replication_slot` command
      */
     default String snapshotTransactionIsolationLevelStatement(SlotCreationResult newSlotInfo) {
@@ -96,9 +96,16 @@ public interface Snapshotter {
     }
 
     /**
-     * Lifecycle hook called once the snapshot phase is finished.
+     * Lifecycle hook called once the snapshot phase is successful.
      */
     default void snapshotCompleted() {
+        // no operation
+    }
+
+    /**
+     * Lifecycle hook called once the snapshot phase is aborted.
+     */
+    default void snapshotAborted() {
         // no operation
     }
 }

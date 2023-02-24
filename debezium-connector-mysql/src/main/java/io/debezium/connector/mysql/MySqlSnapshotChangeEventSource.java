@@ -39,7 +39,6 @@ import io.debezium.relational.RelationalTableFilters;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
 import io.debezium.schema.SchemaChangeEvent;
-import io.debezium.schema.SchemaChangeEvent.SchemaChangeEventType;
 import io.debezium.util.Clock;
 import io.debezium.util.Collect;
 import io.debezium.util.Strings;
@@ -244,11 +243,6 @@ public class MySqlSnapshotChangeEventSource extends RelationalSnapshotChangeEven
 
                     final TableId tableId = event.getTables().isEmpty() ? null : event.getTables().iterator().next().id();
                     snapshotContext.offset.event(tableId, getClock().currentTime());
-
-                    if (!i.hasNext()) {
-                        super.lastSnapshotRecord(snapshotContext);
-                    }
-
                     dispatcher.dispatchSchemaChangeEvent(snapshotContext.partition, tableId, (receiver) -> receiver.schemaChangeEvent(event));
                 }
 
@@ -384,20 +378,7 @@ public class MySqlSnapshotChangeEventSource extends RelationalSnapshotChangeEven
     protected SchemaChangeEvent getCreateTableEvent(RelationalSnapshotContext<MySqlPartition, MySqlOffsetContext> snapshotContext,
                                                     Table table)
             throws SQLException {
-        return new SchemaChangeEvent(
-                snapshotContext.partition.getSourcePartition(),
-                snapshotContext.offset.getOffset(),
-                snapshotContext.offset.getSourceInfo(),
-                snapshotContext.catalogName,
-                table.id().schema(),
-                null,
-                table,
-                SchemaChangeEventType.CREATE,
-                true);
-    }
-
-    @Override
-    protected void complete(SnapshotContext<MySqlPartition, MySqlOffsetContext> snapshotContext) {
+        return SchemaChangeEvent.ofSnapshotCreate(snapshotContext.partition, snapshotContext.offset, snapshotContext.catalogName, table);
     }
 
     /**
@@ -482,6 +463,9 @@ public class MySqlSnapshotChangeEventSource extends RelationalSnapshotChangeEven
 
     @Override
     protected OptionalLong rowCountForTable(TableId tableId) {
+        if (getSnapshotSelectOverridesByTable(tableId) != null) {
+            return super.rowCountForTable(tableId);
+        }
         return connection.getEstimatedTableSize(tableId);
     }
 
@@ -524,7 +508,7 @@ public class MySqlSnapshotChangeEventSource extends RelationalSnapshotChangeEven
      */
     private static class MySqlSnapshotContext extends RelationalSnapshotContext<MySqlPartition, MySqlOffsetContext> {
 
-        public MySqlSnapshotContext(MySqlPartition partition) throws SQLException {
+        MySqlSnapshotContext(MySqlPartition partition) throws SQLException {
             super(partition, "");
         }
     }
@@ -550,23 +534,11 @@ public class MySqlSnapshotChangeEventSource extends RelationalSnapshotChangeEven
 
             final TableId tableId = event.getTables().isEmpty() ? null : event.getTables().iterator().next().id();
             snapshotContext.offset.event(tableId, getClock().currentTime());
-
-            // If data are not snapshotted then the last schema change must set last snapshot flag
-            if (!snapshottingTask.snapshotData() && !i.hasNext()) {
-                lastSnapshotRecord(snapshotContext);
-            }
             dispatcher.dispatchSchemaChangeEvent(snapshotContext.partition, tableId, (receiver) -> receiver.schemaChangeEvent(event));
         }
 
         // Make schema available for snapshot source
         databaseSchema.tableIds().forEach(x -> snapshotContext.tables.overwriteTable(databaseSchema.tableFor(x)));
-    }
-
-    @Override
-    protected void lastSnapshotRecord(RelationalSnapshotContext<MySqlPartition, MySqlOffsetContext> snapshotContext) {
-        if (delayedSchemaSnapshotTables.isEmpty()) {
-            super.lastSnapshotRecord(snapshotContext);
-        }
     }
 
     @Override

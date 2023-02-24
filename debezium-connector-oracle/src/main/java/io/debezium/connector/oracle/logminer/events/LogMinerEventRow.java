@@ -45,6 +45,10 @@ public class LogMinerEventRow {
     private static final int ROW_ID = 11;
     private static final int ROLLBACK_FLAG = 12;
     private static final int RS_ID = 13;
+    private static final int STATUS = 14;
+    private static final int INFO = 15;
+    private static final int SSN = 16;
+    private static final int THREAD = 17;
 
     private Scn scn;
     private TableId tableId;
@@ -59,6 +63,10 @@ public class LogMinerEventRow {
     private boolean rollbackFlag;
     private String rsId;
     private String redoSql;
+    private int status;
+    private String info;
+    private long ssn;
+    private int thread;
 
     public Scn getScn() {
         return scn;
@@ -112,6 +120,22 @@ public class LogMinerEventRow {
         return redoSql;
     }
 
+    public int getStatus() {
+        return status;
+    }
+
+    public String getInfo() {
+        return info;
+    }
+
+    public long getSsn() {
+        return ssn;
+    }
+
+    public int getThread() {
+        return thread;
+    }
+
     /**
      * Returns a {@link LogMinerEventRow} instance based on the current row of the JDBC {@link ResultSet}.
      *
@@ -153,6 +177,10 @@ public class LogMinerEventRow {
         this.rollbackFlag = resultSet.getInt(ROLLBACK_FLAG) == 1;
         this.rsId = resultSet.getString(RS_ID);
         this.redoSql = getSqlRedo(resultSet);
+        this.status = resultSet.getInt(STATUS);
+        this.info = resultSet.getString(INFO);
+        this.ssn = resultSet.getLong(SSN);
+        this.thread = resultSet.getInt(THREAD);
         if (this.tableName != null) {
             this.tableId = new TableId(catalogName, tablespaceName, tableName);
         }
@@ -220,6 +248,7 @@ public class LogMinerEventRow {
                 ", rowId='" + rowId + '\'' +
                 ", rollbackFlag=" + rollbackFlag +
                 ", rsId=" + rsId +
+                ", ssn=" + ssn +
                 ", redoSql='" + redoSql + '\'' +
                 '}';
     }

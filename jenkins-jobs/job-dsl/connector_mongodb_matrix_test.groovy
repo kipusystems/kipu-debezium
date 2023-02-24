@@ -6,14 +6,8 @@ matrixJob('connector-debezium-mongodb-matrix-test') {
     description('Executes tests for MongoDB Connector with MongoDB matrix')
     label('Slave')
 
-    combinationFilter('''
-         (CAPTURE_MODE == 'oplog' && (MONGODB_VERSION.startsWith('3.') || MONGODB_VERSION == '4.0')) ||
-         (CAPTURE_MODE == 'change_streams_update_full' && !MONGODB_VERSION.startsWith('3.'))
-         ''')
-
     axes {
-        text('MONGODB_VERSION', '3.2', '3.4', '3.6', '4.0', '4.2', '4.4', '5.0')
-        text('CAPTURE_MODE', 'oplog', 'change_streams_update_full')
+        text('MONGODB_VERSION', '4.0', '4.2', '4.4', '5.0')
         label("Node", "Slave")
 
     }
@@ -38,17 +32,24 @@ matrixJob('connector-debezium-mongodb-matrix-test') {
         timeout {
             noActivity(1200)
         }
+        credentialsBinding {
+            usernamePassword('QUAY_USERNAME', 'QUAY_PASSWORD', 'rh-integration-quay-creds')
+            string('RP_TOKEN', 'report-portal-token')
+        }
     }
 
     publishers {
+        archiveArtifacts {
+            pattern('**/archive.tar.gz')
+        }
         archiveJunit('**/target/surefire-reports/*.xml')
         archiveJunit('**/target/failsafe-reports/*.xml')
-        mailer('jpechane@redhat.com', false, true)
+        mailer('debezium-qe@redhat.com', false, true)
     }
 
     logRotator {
         daysToKeep(7)
-        numToKeep(10)
+        numToKeep(5)
     }
 
     steps {
@@ -63,18 +64,35 @@ if [ "$PRODUCT_BUILD" == true ] ; then
     curl -OJs $SOURCE_URL && unzip debezium-*-src.zip
     pushd debezium-*-src
     pushd $(ls | grep -P 'debezium-[^-]+.Final')
+    ATTRIBUTES="downstream mongoDB $MONGODB_VERSION"
 else
     git clone $REPOSITORY . 
     git checkout $BRANCH
+    ATTRIBUTES="upstream mongoDB $MONGODB_VERSION"
 fi
                     
 # Run maven build
 mvn clean install -U -s $HOME/.m2/settings-snapshots.xml -pl debezium-bom,debezium-connector-mongodb -am -fae \
     -Dmaven.test.failure.ignore=true \
     -Dversion.mongo.server=$MONGODB_VERSION \
-    -Dcapture.mode=$CAPTURE_MODE \
     -Dinsecure.repositories=WARN \
-    $PROFILE_PROD 
+    -Dmongodb.replica.size=3 \
+    -Papicurio \
+    $PROFILE_PROD
+ 
+
+RESULTS_FOLDER=final-results
+RESULTS_PATH=$RESULTS_FOLDER/results
+
+mkdir -p $RESULTS_PATH
+cp **/target/surefire-reports/*.xml $RESULTS_PATH
+cp **/target/failsafe-reports/*.xml $RESULTS_PATH
+rm -rf $RESULTS_PATH/failsafe-summary.xml
+tar czf archive.tar.gz $RESULTS_PATH
+
+docker login quay.io -u "$QUAY_USERNAME" -p "$QUAY_PASSWORD"
+
+./jenkins-jobs/scripts/report.sh --connector true --env-file env-file.env --results-folder $RESULTS_FOLDER --attributes "$ATTRIBUTES"
 ''')
     }
 }

@@ -6,6 +6,8 @@
 
 package io.debezium.connector.mysql;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -23,12 +25,12 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
-import org.fest.assertions.Assertions;
-import org.fest.assertions.MapAssert;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import io.debezium.config.CommonConnectorConfig;
+import io.debezium.config.CommonConnectorConfig.SchemaNameAdjustmentMode;
 import io.debezium.config.Configuration;
 import io.debezium.connector.mysql.MySqlConnectorConfig.SnapshotMode;
 import io.debezium.doc.FixFor;
@@ -36,19 +38,20 @@ import io.debezium.jdbc.JdbcConnection;
 import io.debezium.junit.logging.LogInterceptor;
 import io.debezium.pipeline.source.snapshot.incremental.AbstractIncrementalSnapshotWithSchemaChangesSupportTest;
 import io.debezium.relational.TableId;
+import io.debezium.relational.history.SchemaHistory;
 import io.debezium.util.Testing;
 
 public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchemaChangesSupportTest<MySqlConnector> {
 
     protected static final String SERVER_NAME = "is_test";
-    protected final UniqueDatabase DATABASE = new UniqueDatabase(SERVER_NAME, "incremental_snapshot-test").withDbHistoryPath(DB_HISTORY_PATH);
+    protected final UniqueDatabase DATABASE = new UniqueDatabase(SERVER_NAME, "incremental_snapshot-test").withDbHistoryPath(SCHEMA_HISTORY_PATH);
 
     @Before
     public void before() throws SQLException {
         stopConnector();
         DATABASE.createAndInitialize();
         initializeConnectorTestFramework();
-        Testing.Files.delete(DB_HISTORY_PATH);
+        Testing.Files.delete(SCHEMA_HISTORY_PATH);
     }
 
     @After
@@ -57,7 +60,7 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
             stopConnector();
         }
         finally {
-            Testing.Files.delete(DB_HISTORY_PATH);
+            Testing.Files.delete(SCHEMA_HISTORY_PATH);
         }
     }
 
@@ -67,11 +70,34 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
                 .with(MySqlConnectorConfig.USER, "mysqluser")
                 .with(MySqlConnectorConfig.PASSWORD, "mysqlpw")
                 .with(MySqlConnectorConfig.SNAPSHOT_MODE, SnapshotMode.SCHEMA_ONLY.getValue())
-                .with(MySqlConnectorConfig.SNAPSHOT_FETCH_SIZE, 5)
                 .with(MySqlConnectorConfig.INCLUDE_SCHEMA_CHANGES, false)
                 .with(MySqlConnectorConfig.SIGNAL_DATA_COLLECTION, DATABASE.qualifiedTableName("debezium_signal"))
                 .with(MySqlConnectorConfig.INCREMENTAL_SNAPSHOT_CHUNK_SIZE, 10)
-                .with(MySqlConnectorConfig.INCREMENTAL_SNAPSHOT_ALLOW_SCHEMA_CHANGES, true);
+                .with(MySqlConnectorConfig.INCREMENTAL_SNAPSHOT_ALLOW_SCHEMA_CHANGES, true)
+                .with(CommonConnectorConfig.SCHEMA_NAME_ADJUSTMENT_MODE, SchemaNameAdjustmentMode.AVRO);
+    }
+
+    @Override
+    protected Configuration.Builder mutableConfig(boolean signalTableOnly, boolean storeOnlyCapturedDdl) {
+        final String tableIncludeList;
+        if (signalTableOnly) {
+            tableIncludeList = DATABASE.qualifiedTableName("c");
+        }
+        else {
+            tableIncludeList = DATABASE.qualifiedTableName("a") + ", " + DATABASE.qualifiedTableName("c");
+        }
+        return DATABASE.defaultConfig()
+                .with(MySqlConnectorConfig.INCLUDE_SQL_QUERY, true)
+                .with(MySqlConnectorConfig.USER, "mysqluser")
+                .with(MySqlConnectorConfig.PASSWORD, "mysqlpw")
+                .with(MySqlConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL.getValue())
+                .with(MySqlConnectorConfig.INCLUDE_SCHEMA_CHANGES, false)
+                .with(MySqlConnectorConfig.SIGNAL_DATA_COLLECTION, DATABASE.qualifiedTableName("debezium_signal"))
+                .with(MySqlConnectorConfig.TABLE_INCLUDE_LIST, tableIncludeList)
+                .with(MySqlConnectorConfig.INCREMENTAL_SNAPSHOT_CHUNK_SIZE, 10)
+                .with(MySqlConnectorConfig.INCREMENTAL_SNAPSHOT_ALLOW_SCHEMA_CHANGES, true)
+                .with(SchemaHistory.STORE_ONLY_CAPTURED_TABLES_DDL, storeOnlyCapturedDdl)
+                .with(CommonConnectorConfig.SCHEMA_NAME_ADJUSTMENT_MODE, SchemaNameAdjustmentMode.AVRO);
     }
 
     @Override
@@ -90,18 +116,57 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
     }
 
     @Override
+    protected List<String> topicNames() {
+        return List.of(DATABASE.topicForTable("a"), DATABASE.topicForTable("c"));
+    }
+
+    @Override
     protected String tableName() {
-        return TableId.parse(DATABASE.qualifiedTableName("a")).toQuotedString('`');
+        return tableNameId().toQuotedString('`');
+    }
+
+    @Override
+    protected List<String> tableNames() {
+        final String tableA = TableId.parse(DATABASE.qualifiedTableName("a")).toQuotedString('`');
+        final String tableB = TableId.parse(DATABASE.qualifiedTableName("c")).toQuotedString('`');
+        return List.of(tableA, tableB);
     }
 
     @Override
     protected String signalTableName() {
-        return TableId.parse(DATABASE.qualifiedTableName("debezium_signal")).toQuotedString('`');
+        return tableNameId("debezium_signal").toQuotedString('`');
+    }
+
+    @Override
+    protected String signalTableNameSanitized() {
+        return DATABASE.qualifiedTableName("debezium_signal");
     }
 
     @Override
     protected String tableName(String table) {
-        return TableId.parse(DATABASE.qualifiedTableName(table)).toQuotedString('`');
+        return tableNameId(table).toQuotedString('`');
+    }
+
+    @Override
+    protected String tableDataCollectionId() {
+        return tableNameId().toString();
+    }
+
+    @Override
+    protected List<String> tableDataCollectionIds() {
+        return List.of(tableNameId().toString(), tableNameId("c").toString());
+    }
+
+    private String dataCollectionName(String table) {
+        return tableNameId(table).toString();
+    }
+
+    private TableId tableNameId() {
+        return tableNameId("a");
+    }
+
+    private TableId tableNameId(String table) {
+        return TableId.parse(DATABASE.qualifiedTableName(table));
     }
 
     @Override
@@ -189,7 +254,7 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
         Testing.Print.enable();
         final int ROWS = 10;
 
-        try (final JdbcConnection connection = databaseConnection()) {
+        try (JdbcConnection connection = databaseConnection()) {
             connection.setAutoCommit(false);
             for (int i = 0; i < ROWS; i++) {
                 connection.executeWithoutCommitting(String.format(
@@ -199,8 +264,12 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
             connection.commit();
         }
 
-        startConnector();
-        sendAdHocSnapshotSignal(tableName("a_dt"));
+        final Configuration config = config().with(MySqlConnectorConfig.SNAPSHOT_FETCH_SIZE, 5).build();
+        start(connectorClass(), config, loggingCompletion());
+        waitForConnectorToStart();
+        waitForAvailableRecords(5, TimeUnit.SECONDS);
+
+        sendAdHocSnapshotSignal(dataCollectionName("a_dt"));
 
         final int expectedRecordCount = ROWS;
         final Map<Integer, List<Object>> dbChanges = consumeMixedWithIncrementalSnapshot(
@@ -228,7 +297,7 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
             LocalDate dt = dateTime.toLocalDate();
             LocalDate d = LocalDate.parse(String.format("%s-05-01", 2000 + i));
             LocalTime t = LocalTime.parse(String.format("0%s:00:00", i));
-            Assertions.assertThat(dbChanges).includes(MapAssert.entry(i + 1, List.of(dt, d, t)));
+            assertThat(dbChanges).contains(entry(i + 1, List.of(dt, d, t)));
         }
     }
 
@@ -238,14 +307,18 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
         Testing.Print.enable();
         final LogInterceptor logInterceptor = new LogInterceptor(MySqlBinaryProtocolFieldReader.class);
 
-        try (final JdbcConnection connection = databaseConnection()) {
+        try (JdbcConnection connection = databaseConnection()) {
             connection.setAutoCommit(false);
             connection.executeWithoutCommitting("INSERT INTO a_date (pk) VALUES (1)");
             connection.commit();
         }
 
-        startConnector();
-        sendAdHocSnapshotSignal(tableName("a_date"));
+        final Configuration config = config().with(MySqlConnectorConfig.SNAPSHOT_FETCH_SIZE, 5).build();
+        start(connectorClass(), config, loggingCompletion());
+        waitForConnectorToStart();
+        waitForAvailableRecords(5, TimeUnit.SECONDS);
+
+        sendAdHocSnapshotSignal(dataCollectionName("a_date"));
 
         final int expectedRecordCount = 1;
         final Map<Integer, List<Integer>> dbChanges = consumeMixedWithIncrementalSnapshot(
@@ -259,7 +332,7 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
                 },
                 DATABASE.topicForTable("a_date"),
                 null);
-        Assertions.assertThat(dbChanges).includes(MapAssert.entry(1, Arrays.asList(0, null)));
+        assertThat(dbChanges).contains(entry(1, Arrays.asList(0, null)));
         assertFalse(logInterceptor.containsWarnMessage("Invalid length when read MySQL DATE value. BIN_LEN_DATE is 0."));
     }
 }

@@ -5,6 +5,7 @@
  */
 package io.debezium.pipeline;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.Objects;
@@ -12,7 +13,6 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.header.ConnectHeaders;
@@ -40,13 +40,14 @@ import io.debezium.pipeline.txmetadata.TransactionMonitor;
 import io.debezium.relational.history.ConnectTableChangeSerializer;
 import io.debezium.relational.history.HistoryRecord.Fields;
 import io.debezium.schema.DataCollectionFilters.DataCollectionFilter;
-import io.debezium.schema.DataCollectionId;
 import io.debezium.schema.DataCollectionSchema;
 import io.debezium.schema.DatabaseSchema;
 import io.debezium.schema.HistorizedDatabaseSchema;
 import io.debezium.schema.SchemaChangeEvent;
-import io.debezium.schema.TopicSelector;
-import io.debezium.util.SchemaNameAdjuster;
+import io.debezium.schema.SchemaFactory;
+import io.debezium.schema.SchemaNameAdjuster;
+import io.debezium.spi.schema.DataCollectionId;
+import io.debezium.spi.topic.TopicNamingStrategy;
 
 /**
  * Central dispatcher for data change and schema change events. The former will be routed to the change event queue, the
@@ -57,11 +58,11 @@ import io.debezium.util.SchemaNameAdjuster;
  *
  * @author Gunnar Morling
  */
-public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
+public class EventDispatcher<P extends Partition, T extends DataCollectionId> implements AutoCloseable {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(EventDispatcher.class);
 
-    private final TopicSelector<T> topicSelector;
+    private final TopicNamingStrategy<T> topicNamingStrategy;
     private final DatabaseSchema<T> schema;
     private final HistorizedDatabaseSchema<T> historizedSchema;
     private final ChangeEventQueue<DataChangeEvent> queue;
@@ -87,28 +88,28 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
      */
     private final StreamingChangeRecordReceiver streamingReceiver;
 
-    public EventDispatcher(CommonConnectorConfig connectorConfig, TopicSelector<T> topicSelector,
+    public EventDispatcher(CommonConnectorConfig connectorConfig, TopicNamingStrategy<T> topicNamingStrategy,
                            DatabaseSchema<T> schema, ChangeEventQueue<DataChangeEvent> queue, DataCollectionFilter<T> filter,
                            ChangeEventCreator changeEventCreator, EventMetadataProvider metadataProvider, SchemaNameAdjuster schemaNameAdjuster) {
-        this(connectorConfig, topicSelector, schema, queue, filter, changeEventCreator, null, metadataProvider,
-                null, schemaNameAdjuster);
+        this(connectorConfig, topicNamingStrategy, schema, queue, filter, changeEventCreator, null, metadataProvider,
+                connectorConfig.createHeartbeat(topicNamingStrategy, schemaNameAdjuster, null, null), schemaNameAdjuster);
     }
 
-    public EventDispatcher(CommonConnectorConfig connectorConfig, TopicSelector<T> topicSelector,
+    public EventDispatcher(CommonConnectorConfig connectorConfig, TopicNamingStrategy<T> topicNamingStrategy,
                            DatabaseSchema<T> schema, ChangeEventQueue<DataChangeEvent> queue, DataCollectionFilter<T> filter,
                            ChangeEventCreator changeEventCreator, EventMetadataProvider metadataProvider,
                            Heartbeat heartbeat, SchemaNameAdjuster schemaNameAdjuster) {
-        this(connectorConfig, topicSelector, schema, queue, filter, changeEventCreator, null, metadataProvider,
+        this(connectorConfig, topicNamingStrategy, schema, queue, filter, changeEventCreator, null, metadataProvider,
                 heartbeat, schemaNameAdjuster);
     }
 
-    public EventDispatcher(CommonConnectorConfig connectorConfig, TopicSelector<T> topicSelector,
+    public EventDispatcher(CommonConnectorConfig connectorConfig, TopicNamingStrategy<T> topicNamingStrategy,
                            DatabaseSchema<T> schema, ChangeEventQueue<DataChangeEvent> queue, DataCollectionFilter<T> filter,
                            ChangeEventCreator changeEventCreator, InconsistentSchemaHandler<P, T> inconsistentSchemaHandler,
-                           EventMetadataProvider metadataProvider, Heartbeat customHeartbeat, SchemaNameAdjuster schemaNameAdjuster) {
+                           EventMetadataProvider metadataProvider, Heartbeat heartbeat, SchemaNameAdjuster schemaNameAdjuster) {
         this.tableChangesSerializer = new ConnectTableChangeSerializer(schemaNameAdjuster);
         this.connectorConfig = connectorConfig;
-        this.topicSelector = topicSelector;
+        this.topicNamingStrategy = topicNamingStrategy;
         this.schema = schema;
         this.historizedSchema = schema.isHistorized() ? (HistorizedDatabaseSchema<T>) schema : null;
         this.queue = queue;
@@ -121,31 +122,37 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
         this.neverSkip = connectorConfig.supportsOperationFiltering() || this.skippedOperations.isEmpty();
 
         this.transactionMonitor = new TransactionMonitor(connectorConfig, metadataProvider, schemaNameAdjuster,
-                this::enqueueTransactionMessage);
+                this::enqueueTransactionMessage, topicNamingStrategy.transactionTopic());
         this.signal = new Signal<>(connectorConfig, this);
-        if (customHeartbeat != null) {
-            heartbeat = customHeartbeat;
-        }
-        else {
-            heartbeat = Heartbeat.create(
-                    connectorConfig.getHeartbeatInterval(),
-                    topicSelector.getHeartbeatTopic(),
-                    connectorConfig.getLogicalName(),
-                    schemaNameAdjuster);
-        }
+        this.heartbeat = heartbeat;
 
-        schemaChangeKeySchema = SchemaBuilder.struct()
-                .name(schemaNameAdjuster.adjust("io.debezium.connector." + connectorConfig.getConnectorName() + ".SchemaChangeKey"))
-                .field(Fields.DATABASE_NAME, Schema.STRING_SCHEMA)
-                .build();
-        schemaChangeValueSchema = SchemaBuilder.struct()
-                .name(schemaNameAdjuster.adjust("io.debezium.connector." + connectorConfig.getConnectorName() + ".SchemaChangeValue"))
-                .field(Fields.SOURCE, connectorConfig.getSourceInfoStructMaker().schema())
-                .field(Fields.DATABASE_NAME, Schema.OPTIONAL_STRING_SCHEMA)
-                .field(Fields.SCHEMA_NAME, Schema.OPTIONAL_STRING_SCHEMA)
-                .field(Fields.DDL_STATEMENTS, Schema.OPTIONAL_STRING_SCHEMA)
-                .field(Fields.TABLE_CHANGES, SchemaBuilder.array(tableChangesSerializer.getChangeSchema()).build())
-                .build();
+        schemaChangeKeySchema = SchemaFactory.get().schemaHistoryConnectorKeySchema(schemaNameAdjuster, connectorConfig);
+
+        schemaChangeValueSchema = SchemaFactory.get().schemaHistoryConnectorValueSchema(schemaNameAdjuster, connectorConfig, tableChangesSerializer);
+    }
+
+    public EventDispatcher(CommonConnectorConfig connectorConfig, TopicNamingStrategy<T> topicNamingStrategy,
+                           DatabaseSchema<T> schema, ChangeEventQueue<DataChangeEvent> queue, DataCollectionFilter<T> filter,
+                           ChangeEventCreator changeEventCreator, InconsistentSchemaHandler<P, T> inconsistentSchemaHandler, Heartbeat heartbeat,
+                           SchemaNameAdjuster schemaNameAdjuster, TransactionMonitor transactionMonitor) {
+        this.tableChangesSerializer = new ConnectTableChangeSerializer(schemaNameAdjuster);
+        this.connectorConfig = connectorConfig;
+        this.topicNamingStrategy = topicNamingStrategy;
+        this.schema = schema;
+        this.historizedSchema = schema.isHistorized() ? (HistorizedDatabaseSchema<T>) schema : null;
+        this.queue = queue;
+        this.filter = filter;
+        this.changeEventCreator = changeEventCreator;
+        this.streamingReceiver = new StreamingChangeRecordReceiver();
+        this.emitTombstonesOnDelete = connectorConfig.isEmitTombstoneOnDelete();
+        this.inconsistentSchemaHandler = inconsistentSchemaHandler != null ? inconsistentSchemaHandler : this::errorOnMissingSchema;
+        this.skippedOperations = connectorConfig.getSkippedOperations();
+        this.neverSkip = connectorConfig.supportsOperationFiltering() || this.skippedOperations.isEmpty();
+        this.transactionMonitor = transactionMonitor;
+        this.signal = new Signal<>(connectorConfig, this);
+        this.heartbeat = heartbeat;
+        schemaChangeKeySchema = SchemaFactory.get().schemaHistoryConnectorKeySchema(schemaNameAdjuster, connectorConfig);
+        schemaChangeValueSchema = SchemaFactory.get().schemaHistoryConnectorValueSchema(schemaNameAdjuster, connectorConfig, tableChangesSerializer);
     }
 
     public void dispatchSnapshotEvent(P partition, T dataCollectionId, ChangeRecordEmitter<P> changeRecordEmitter,
@@ -255,12 +262,12 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
                 case WARN:
                     LOGGER.warn(
                             "Error while processing event at offset {}",
-                            changeRecordEmitter.getOffset().getOffset());
+                            changeRecordEmitter.getOffset().getOffset(), e);
                     break;
                 case SKIP:
                     LOGGER.debug(
                             "Error while processing event at offset {}",
-                            changeRecordEmitter.getOffset().getOffset());
+                            changeRecordEmitter.getOffset().getOffset(), e);
                     break;
             }
             return false;
@@ -273,15 +280,15 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
         }
     }
 
-    public void dispatchTransactionCommittedEvent(P partition, OffsetContext offset) throws InterruptedException {
-        transactionMonitor.transactionComittedEvent(partition, offset);
+    public void dispatchTransactionCommittedEvent(P partition, OffsetContext offset, Instant timestamp) throws InterruptedException {
+        transactionMonitor.transactionComittedEvent(partition, offset, timestamp);
         if (incrementalSnapshotChangeEventSource != null) {
             incrementalSnapshotChangeEventSource.processTransactionCommittedEvent(partition, offset);
         }
     }
 
-    public void dispatchTransactionStartedEvent(P partition, String transactionId, OffsetContext offset) throws InterruptedException {
-        transactionMonitor.transactionStartedEvent(partition, transactionId, offset);
+    public void dispatchTransactionStartedEvent(P partition, String transactionId, OffsetContext offset, Instant timestamp) throws InterruptedException {
+        transactionMonitor.transactionStartedEvent(partition, transactionId, offset, timestamp);
         if (incrementalSnapshotChangeEventSource != null) {
             incrementalSnapshotChangeEventSource.processTransactionStartedEvent(partition, offset);
         }
@@ -399,7 +406,7 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
             // Truncate events must have null key schema as they are sent to table topics without keys
             Schema keySchema = (key == null && operation == Operation.TRUNCATE) ? null
                     : dataCollectionSchema.keySchema();
-            String topicName = topicSelector.topicNameFor((T) dataCollectionSchema.id());
+            String topicName = topicNamingStrategy.dataChangeTopic((T) dataCollectionSchema.id());
 
             SourceRecord record = new SourceRecord(partition.getSourcePartition(),
                     offsetContext.getOffset(),
@@ -449,7 +456,7 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
             }
 
             Schema keySchema = dataCollectionSchema.keySchema();
-            String topicName = topicSelector.topicNameFor((T) dataCollectionSchema.id());
+            String topicName = topicNamingStrategy.dataChangeTopic((T) dataCollectionSchema.id());
 
             // the record is produced lazily, so to have the correct offset as per the pre/post completion callbacks
             bufferedEvent = () -> {
@@ -489,7 +496,7 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
 
         public final DataChangeEventListener<P> dataListener;
 
-        public IncrementalSnapshotChangeRecordReceiver(DataChangeEventListener<P> dataListener) {
+        IncrementalSnapshotChangeRecordReceiver(DataChangeEventListener<P> dataListener) {
             this.dataListener = dataListener;
         }
 
@@ -506,7 +513,7 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
             LOGGER.trace("Received change record for {} operation on key {}", operation, key);
 
             Schema keySchema = dataCollectionSchema.keySchema();
-            String topicName = topicSelector.topicNameFor((T) dataCollectionSchema.id());
+            String topicName = topicNamingStrategy.dataChangeTopic((T) dataCollectionSchema.id());
 
             SourceRecord record = new SourceRecord(
                     partition.getSourcePartition(),
@@ -535,6 +542,7 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
         private Struct schemaChangeRecordValue(SchemaChangeEvent event) {
             Struct result = new Struct(schemaChangeValueSchema);
             result.put(Fields.SOURCE, event.getSource());
+            result.put(Fields.TIMESTAMP, event.getTimestamp().toEpochMilli());
             result.put(Fields.DATABASE_NAME, event.getDatabase());
             result.put(Fields.SCHEMA_NAME, event.getSchema());
             result.put(Fields.DDL_STATEMENTS, event.getDdl());
@@ -547,7 +555,7 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
             historizedSchema.applySchemaChange(event);
 
             if (connectorConfig.isSchemaChangesHistoryEnabled()) {
-                final String topicName = topicSelector.getPrimaryTopic();
+                final String topicName = topicNamingStrategy.schemaChangeTopic();
                 final Integer partition = 0;
                 final Struct key = schemaChangeRecordKey(event);
                 final Struct value = schemaChangeRecordValue(event);
@@ -596,5 +604,12 @@ public class EventDispatcher<P extends Partition, T extends DataCollectionId> {
 
     public IncrementalSnapshotChangeEventSource<P, T> getIncrementalSnapshotChangeEventSource() {
         return incrementalSnapshotChangeEventSource;
+    }
+
+    @Override
+    public void close() {
+        if (heartbeatsEnabled()) {
+            heartbeat.close();
+        }
     }
 }

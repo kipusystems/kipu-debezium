@@ -1,5 +1,3 @@
-The *MBean* is `debezium.{mbean-name}:type=connector-metrics,context=snapshot,server=_<{context}.server.name>_`.
-
 Snapshot metrics are not exposed unless a snapshot operation is active, or if a snapshot has occurred since the last connector start.
 
 The following table lists the shapshot metrics that are available.
@@ -23,13 +21,6 @@ The following table lists the shapshot metrics that are available.
 |[[connectors-snaps-metric-numberofeventsfiltered_{context}]]<<connectors-snaps-metric-numberofeventsfiltered_{context}, `NumberOfEventsFiltered`>>
 |`long`
 | The number of events that have been filtered by include/exclude list filtering rules configured on the connector.
-
-ifdef::product[]
-|[[connectors-snaps-metric-monitoredtables_{context}]]<<connectors-snaps-metric-monitoredtables_{context}, `MonitoredTables`>> +
-_Deprecated and scheduled for removal in a future release; use the `CapturedTables` metric instead._
-|`string[]`
-|The list of tables that are monitored by the connector.
-endif::product[]
 
 |[[connectors-snaps-metric-capturedtables_{context}]]<<connectors-snaps-metric-capturedtables_{context}, `CapturedTables`>>
 |`string[]`
@@ -55,6 +46,10 @@ endif::product[]
 |`boolean`
 |Whether the snapshot was started.
 
+|[[connectors-snaps-metric-snapshotpaused_{context}]]<<connectors-snaps-metric-snapshotpaused_{context}, `SnapshotPaused`>>
+|`boolean`
+|Whether the snapshot was paused.
+
 |[[connectors-snaps-metric-snapshotaborted_{context}]]<<connectors-snaps-metric-snapshotaborted_{context}, `SnapshotAborted`>>
 |`boolean`
 |Whether the snapshot was aborted.
@@ -65,7 +60,11 @@ endif::product[]
 
 |[[connectors-snaps-metric-snapshotdurationinseconds_{context}]]<<connectors-snaps-metric-snapshotdurationinseconds_{context}, `SnapshotDurationInSeconds`>>
 |`long`
-|The total number of seconds that the snapshot has taken so far, even if not complete.
+|The total number of seconds that the snapshot has taken so far, even if not complete. Includes also time when snapshot was paused.
+
+|[[connectors-snaps-metric-snapshotpauseddurationinseconds_{context}]]<<connectors-snaps-metric-snapshotpauseddurationinseconds_{context}, `SnapshotPausedDurationInSeconds`>>
+|`long`
+|The total number of seconds that the snapshot was paused. If the snapshot was paused several times, the paused time adds up.
 
 |[[connectors-snaps-metric-rowsscanned_{context}]]<<connectors-snaps-metric-rowsscanned_{context}, `RowsScanned`>>
 |`Map<String, Long>`

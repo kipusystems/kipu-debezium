@@ -18,8 +18,9 @@ ENV KAFKA_HOME=/opt/kafka \
 #
 # Install openjdk-17, iproute and unzip
 #
-RUN dnf -y install java-17-openjdk 
+RUN dnf -y install java-17-openjdk
 RUN dnf -y install unzip
+RUN dnf -y install nmap
 RUN dnf -y install iproute && dnf clean all
 
 #
@@ -72,8 +73,8 @@ COPY metrics.yaml $KAFKA_HOME/config
 # Download kafka and kafka-connect start scripts
 #
 RUN mkdir /scripts
-RUN curl -L https://raw.githubusercontent.com/debezium/docker-images/main/kafka/${DEBEZIUM_VERSION}/docker-entrypoint.sh -o /scripts/kafka-start.sh
-RUN curl -L https://raw.githubusercontent.com/debezium/docker-images/main/connect-base/${DEBEZIUM_VERSION}/docker-entrypoint.sh -o /scripts/kafka-connect-start.sh
+RUN curl -L https://raw.githubusercontent.com/debezium/container-images/main/kafka/${DEBEZIUM_VERSION}/docker-entrypoint.sh -o /scripts/kafka-start.sh
+RUN curl -L https://raw.githubusercontent.com/debezium/container-images/main/connect-base/${DEBEZIUM_VERSION}/docker-entrypoint.sh -o /scripts/kafka-connect-start.sh
 
 
 #

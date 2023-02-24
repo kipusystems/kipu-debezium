@@ -5,6 +5,7 @@
  */
 package io.debezium.pipeline.metrics;
 
+import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
 
 import io.debezium.annotation.ThreadSafe;
@@ -14,7 +15,7 @@ import io.debezium.pipeline.meters.SnapshotMeter;
 import io.debezium.pipeline.source.spi.EventMetadataProvider;
 import io.debezium.pipeline.spi.Partition;
 import io.debezium.relational.TableId;
-import io.debezium.schema.DataCollectionId;
+import io.debezium.spi.schema.DataCollectionId;
 
 /**
  * The default implementation of metrics related to the snapshot phase of a connector.
@@ -30,6 +31,12 @@ public class DefaultSnapshotChangeEventSourceMetrics<P extends Partition> extend
     public <T extends CdcSourceTaskContext> DefaultSnapshotChangeEventSourceMetrics(T taskContext, ChangeEventQueueMetrics changeEventQueueMetrics,
                                                                                     EventMetadataProvider metadataProvider) {
         super(taskContext, "snapshot", changeEventQueueMetrics, metadataProvider);
+        snapshotMeter = new SnapshotMeter(taskContext.getClock());
+    }
+
+    public <T extends CdcSourceTaskContext> DefaultSnapshotChangeEventSourceMetrics(T taskContext, ChangeEventQueueMetrics changeEventQueueMetrics,
+                                                                                    EventMetadataProvider metadataProvider, Map<String, String> tags) {
+        super(taskContext, changeEventQueueMetrics, metadataProvider, tags);
         snapshotMeter = new SnapshotMeter(taskContext.getClock());
     }
 
@@ -49,6 +56,11 @@ public class DefaultSnapshotChangeEventSourceMetrics<P extends Partition> extend
     }
 
     @Override
+    public boolean getSnapshotPaused() {
+        return snapshotMeter.getSnapshotPaused();
+    }
+
+    @Override
     public boolean getSnapshotCompleted() {
         return snapshotMeter.getSnapshotCompleted();
     }
@@ -63,14 +75,9 @@ public class DefaultSnapshotChangeEventSourceMetrics<P extends Partition> extend
         return snapshotMeter.getSnapshotDurationInSeconds();
     }
 
-    /**
-     * @deprecated Superseded by the 'Captured Tables' metric. Use {@link #getCapturedTables()}.
-     * Scheduled for removal in a future release.
-     */
     @Override
-    @Deprecated
-    public String[] getMonitoredTables() {
-        return snapshotMeter.getCapturedTables();
+    public long getSnapshotPausedDurationInSeconds() {
+        return snapshotMeter.getSnapshotPausedDurationInSeconds();
     }
 
     @Override
@@ -91,6 +98,16 @@ public class DefaultSnapshotChangeEventSourceMetrics<P extends Partition> extend
     @Override
     public void snapshotStarted(P partition) {
         snapshotMeter.snapshotStarted();
+    }
+
+    @Override
+    public void snapshotPaused(P partition) {
+        snapshotMeter.snapshotPaused();
+    }
+
+    @Override
+    public void snapshotResumed(P partition) {
+        snapshotMeter.snapshotResumed();
     }
 
     @Override

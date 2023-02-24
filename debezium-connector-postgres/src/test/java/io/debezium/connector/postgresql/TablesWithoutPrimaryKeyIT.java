@@ -6,6 +6,8 @@
 
 package io.debezium.connector.postgresql;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
@@ -13,7 +15,6 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
-import org.fest.assertions.Assertions;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -54,11 +55,11 @@ public class TablesWithoutPrimaryKeyIT extends AbstractRecordsProducerTest {
         TestConsumer consumer = testConsumer(expectedRecordsCount, "nopk");
         consumer.await(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS);
         final Map<String, List<SourceRecord>> recordsByTopic = recordsByTopic(expectedRecordsCount, consumer);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().field("pk")).isNotNull();
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().fields()).hasSize(1);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().field("pk")).isNotNull();
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().fields()).hasSize(1);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t3").get(0).keySchema()).isNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().field("pk")).isNotNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().fields()).hasSize(1);
+        assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().field("pk")).isNotNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().fields()).hasSize(1);
+        assertThat(recordsByTopic.get("test_server.nopk.t3").get(0).keySchema()).isNull();
     }
 
     @Test
@@ -67,7 +68,7 @@ public class TablesWithoutPrimaryKeyIT extends AbstractRecordsProducerTest {
 
         start(PostgresConnector.class, TestHelper.defaultConfig()
                 .with(PostgresConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL_ONLY)
-                .with(PostgresConnectorConfig.SCHEMA_WHITELIST, "nopk")
+                .with(PostgresConnectorConfig.SCHEMA_INCLUDE_LIST, "nopk")
                 .build());
         assertConnectorIsRunning();
 
@@ -76,11 +77,11 @@ public class TablesWithoutPrimaryKeyIT extends AbstractRecordsProducerTest {
         TestConsumer consumer = testConsumer(expectedRecordsCount, "nopk");
         consumer.await(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS);
         final Map<String, List<SourceRecord>> recordsByTopic = recordsByTopic(expectedRecordsCount, consumer);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().field("pk")).isNotNull();
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().fields()).hasSize(1);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().field("pk")).isNotNull();
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().fields()).hasSize(1);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t3").get(0).keySchema()).isNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().field("pk")).isNotNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().fields()).hasSize(1);
+        assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().field("pk")).isNotNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().fields()).hasSize(1);
+        assertThat(recordsByTopic.get("test_server.nopk.t3").get(0).keySchema()).isNull();
     }
 
     @Test
@@ -100,11 +101,11 @@ public class TablesWithoutPrimaryKeyIT extends AbstractRecordsProducerTest {
         TestConsumer consumer = testConsumer(expectedRecordsCount, "nopk");
         consumer.await(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS);
         final Map<String, List<SourceRecord>> recordsByTopic = recordsByTopic(expectedRecordsCount, consumer);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().field("pk")).isNotNull();
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().fields()).hasSize(1);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().field("pk")).isNotNull();
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().fields()).hasSize(1);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t3").get(0).keySchema()).isNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().field("pk")).isNotNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().fields()).hasSize(1);
+        assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().field("pk")).isNotNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().fields()).hasSize(1);
+        assertThat(recordsByTopic.get("test_server.nopk.t3").get(0).keySchema()).isNull();
 
         TestHelper.execute("UPDATE nopk.t3 SET val = 300 WHERE pk = 3;");
         TestHelper.execute("DELETE FROM nopk.t3;");
@@ -113,20 +114,20 @@ public class TablesWithoutPrimaryKeyIT extends AbstractRecordsProducerTest {
         final Map<String, List<SourceRecord>> recordsByTopic2 = recordsByTopic(2, consumer);
         final SourceRecord update = recordsByTopic2.get("test_server.nopk.t3").get(0);
         final SourceRecord delete = recordsByTopic2.get("test_server.nopk.t3").get(1);
-        Assertions.assertThat(update.keySchema()).isNull();
-        Assertions.assertThat(delete.keySchema()).isNull();
+        assertThat(update.keySchema()).isNull();
+        assertThat(delete.keySchema()).isNull();
 
-        Assertions.assertThat(((Struct) update.value()).getStruct("before").get("val")).isEqualTo(30);
-        Assertions.assertThat(((Struct) update.value()).getStruct("after").get("val")).isEqualTo(300);
+        assertThat(((Struct) update.value()).getStruct("before").get("val")).isEqualTo(30);
+        assertThat(((Struct) update.value()).getStruct("after").get("val")).isEqualTo(300);
 
-        Assertions.assertThat(((Struct) delete.value()).getStruct("before").get("val")).isEqualTo(300);
+        assertThat(((Struct) delete.value()).getStruct("before").get("val")).isEqualTo(300);
     }
 
     @Test
     public void shouldProcessFromStreamingOld() throws Exception {
         start(PostgresConnector.class, TestHelper.defaultConfig()
                 .with(PostgresConnectorConfig.SNAPSHOT_MODE, SnapshotMode.NEVER)
-                .with(PostgresConnectorConfig.SCHEMA_WHITELIST, "nopk")
+                .with(PostgresConnectorConfig.SCHEMA_INCLUDE_LIST, "nopk")
                 .build());
         assertConnectorIsRunning();
         waitForStreamingToStart();
@@ -138,10 +139,10 @@ public class TablesWithoutPrimaryKeyIT extends AbstractRecordsProducerTest {
         TestConsumer consumer = testConsumer(expectedRecordsCount, "nopk");
         consumer.await(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS);
         final Map<String, List<SourceRecord>> recordsByTopic = recordsByTopic(expectedRecordsCount, consumer);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().field("pk")).isNotNull();
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().fields()).hasSize(1);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().field("pk")).isNotNull();
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().fields()).hasSize(1);
-        Assertions.assertThat(recordsByTopic.get("test_server.nopk.t3").get(0).keySchema()).isNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().field("pk")).isNotNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t1").get(0).keySchema().fields()).hasSize(1);
+        assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().field("pk")).isNotNull();
+        assertThat(recordsByTopic.get("test_server.nopk.t2").get(0).keySchema().fields()).hasSize(1);
+        assertThat(recordsByTopic.get("test_server.nopk.t3").get(0).keySchema()).isNull();
     }
 }

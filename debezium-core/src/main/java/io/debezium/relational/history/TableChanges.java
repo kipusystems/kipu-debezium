@@ -38,6 +38,18 @@ public class TableChanges implements Iterable<TableChange> {
         return this;
     }
 
+    public TableChanges alter(TableChange change) {
+        if (change.getPreviousId() == null) {
+            return alter(change.getTable());
+        }
+        return rename(change.getTable(), change.getPreviousId());
+    }
+
+    public TableChanges rename(Table table, TableId previousId) {
+        changes.add(new TableChange(TableChangeType.ALTER, table, previousId));
+        return this;
+    }
+
     public TableChanges drop(Table table) {
         changes.add(new TableChange(TableChangeType.DROP, table));
         return this;
@@ -80,13 +92,19 @@ public class TableChanges implements Iterable<TableChange> {
     public static class TableChange {
 
         private final TableChangeType type;
+        private final TableId previousId;
         private final TableId id;
         private final Table table;
 
         public TableChange(TableChangeType type, Table table) {
+            this(type, table, null);
+        }
+
+        public TableChange(TableChangeType type, Table table, TableId previousId) {
             this.type = type;
             this.table = table;
             this.id = table.id();
+            this.previousId = previousId;
         }
 
         public TableChangeType getType() {
@@ -95,6 +113,10 @@ public class TableChanges implements Iterable<TableChange> {
 
         public TableId getId() {
             return id;
+        }
+
+        public TableId getPreviousId() {
+            return previousId;
         }
 
         public Table getTable() {
@@ -106,6 +128,7 @@ public class TableChanges implements Iterable<TableChange> {
             final int prime = 31;
             int result = 1;
             result = prime * result + id.hashCode();
+            result = prime * result + ((previousId == null) ? 0 : previousId.hashCode());
             result = prime * result + ((table == null) ? 0 : table.hashCode());
             result = prime * result + type.hashCode();
             return result;
@@ -126,6 +149,14 @@ public class TableChanges implements Iterable<TableChange> {
             if (!id.equals(other.id)) {
                 return false;
             }
+            if (previousId == null) {
+                if (other.previousId != null) {
+                    return false;
+                }
+            }
+            else if (!previousId.equals(other.previousId)) {
+                return false;
+            }
             if (table == null) {
                 if (other.table != null) {
                     return false;
@@ -142,8 +173,9 @@ public class TableChanges implements Iterable<TableChange> {
 
         @Override
         public String toString() {
-            return "TableChange [type=" + type + ", id=" + id + ", table=" + table + "]";
+            return "TableChange [type=" + type + ", id=" + id + ", previousId=" + previousId + ", table=" + table + "]";
         }
+
     }
 
     /**
@@ -154,7 +186,7 @@ public class TableChanges implements Iterable<TableChange> {
      *
      * @param <T> target type
      */
-    public static interface TableChangesSerializer<T> {
+    public interface TableChangesSerializer<T> {
 
         T serialize(TableChanges tableChanges);
 

@@ -62,7 +62,8 @@ def jiraGET(path, params = [:]) {
 
 def unresolvedIssuesFromJira() {
     jiraGET('search', [
-        'jql': "project=$JIRA_PROJECT AND fixVersion=$version ORDER BY key ASC"
+        'jql': "project=$JIRA_PROJECT AND fixVersion=$version ORDER BY key ASC",
+        'maxResults': '500'
     ]).issues.collect { ['key': it.key, 'title': it.fields.summary, 'type': it.fields.issuetype.name, 'labels': it.fields.labels] }
 }
 
@@ -138,7 +139,7 @@ println """
 [[release-${version.toLowerCase().reverse().replaceFirst('\\.', '-').reverse()}]]
 == *Release $version* _(${today()})_
 
-See the https://issues.redhat.com/secure/ReleaseNote.jspa?projectId=12377386&version=$versionId[complete list of issues].
+See the https://issues.redhat.com/secure/ReleaseNote.jspa?projectId=12317320&version=$versionId[complete list of issues].
 
 === Kafka compatibility
 

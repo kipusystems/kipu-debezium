@@ -7,7 +7,7 @@ package io.debezium.connector.mongodb;
 
 import static io.debezium.connector.mongodb.JsonSerialization.COMPACT_JSON_SETTINGS;
 import static io.debezium.data.Envelope.FieldName.AFTER;
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.fail;
 
 import java.time.Duration;
@@ -22,8 +22,11 @@ import org.bson.Document;
 import org.bson.types.ObjectId;
 import org.junit.Test;
 
+import io.debezium.config.CommonConnectorConfig;
+import io.debezium.config.CommonConnectorConfig.SchemaNameAdjustmentMode;
 import io.debezium.config.Configuration;
 import io.debezium.connector.mongodb.FieldBlacklistIT.ExpectedUpdate;
+import io.debezium.doc.FixFor;
 import io.debezium.junit.logging.LogInterceptor;
 
 /**
@@ -34,7 +37,6 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
     private static final String DATABASE_NAME = "dbA";
     private static final String COLLECTION_NAME = "c1";
     private static final String SERVER_NAME = "serverX";
-    private static final String PATCH = MongoDbFieldName.PATCH;
     private static final String ID = "_id";
 
     @Test
@@ -137,13 +139,8 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
         SourceRecord record = getUpdateRecord("*.c1.address.missing:new_missing", obj, updateObj);
 
         Struct value = (Struct) record.value();
-        if (TestHelper.isOplogCaptureMode()) {
-            assertThat(getDocumentFromUpdateRecord(value)).isEqualTo(updateObj);
-        }
-        else {
-            final Document fullObj = ((Document) updateObj.get("$set")).append(ID, objId);
-            assertThat(getDocumentFromUpdateRecord(value)).isEqualTo(fullObj);
-        }
+        final Document fullObj = ((Document) updateObj.get("$set")).append(ID, objId);
+        assertThat(getDocumentFromUpdateRecord(value)).isEqualTo(fullObj);
     }
 
     @Test
@@ -1155,8 +1152,7 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
                 .append("addresses.0.street", "Claude Debussylaan")
                 .append("addresses.0.city", "Amsterdam");
 
-        assertShouldNotRenameDuringUpdate("*.c1.addresses.street:city", obj, updateObj, false,
-                TestHelper.isOplogCaptureMode() ? "addresses.0.city" : "city");
+        assertShouldNotRenameDuringUpdate("*.c1.addresses.street:city", obj, updateObj, false, "city");
     }
 
     @Test
@@ -1466,12 +1462,6 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
                 .append("addresses.0.number", "")
                 .append("addresses.0.street", "")
                 .append("addresses.0.city", "");
-
-        if (TestHelper.isOplogCaptureMode()) {
-            // Change Stream does not send unset fields in both full and change document
-            // so the error would not be thrown
-            assertShouldNotRenameDuringUpdate("*.c1.addresses.street:city", obj, updateObj, true, "addresses.0.city");
-        }
     }
 
     @Test
@@ -1608,7 +1598,7 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
         config = getConfiguration("*.c1.name:new_name,*.c1.active:new_active");
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
 
         ObjectId objId = new ObjectId();
         Document obj = new Document("_id", objId);
@@ -1634,9 +1624,7 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
 
         Struct value = (Struct) record.value();
         String json = value.getString(AFTER);
-        if (json == null) {
-            json = value.getString(PATCH);
-        }
+
         assertThat(json).isNull();
     }
 
@@ -1645,7 +1633,7 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
         config = getConfiguration("*.c1.name:new_name,*.c1.active:new_active");
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
 
         ObjectId objId = new ObjectId();
         Document obj = new Document("_id", objId);
@@ -1673,6 +1661,145 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
         assertThat(value).isNull();
     }
 
+    @Test
+    @FixFor("DBZ-5328")
+    public void shouldRenameFieldsIncludingDashesForReadEvent() throws Exception {
+        ObjectId objId = new ObjectId();
+        Document obj = new Document()
+                .append("_id", objId)
+                .append("name", "Sally")
+                .append("phone", 123L)
+                .append("new-active", true)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6));
+
+        // @formatter:off
+        String expected = "{"
+                +     "\"_id\": {\"$oid\": \"" + objId + "\"},"
+                +     "\"phone\": {\"$numberLong\": \"123\"},"
+                +     "\"scores\": [1.2,3.4,5.6],"
+                +     "\"new-name\": \"Sally\","
+                +     "\"new_active\": true"
+                + "}";
+        // @formatter:on
+
+        SourceRecord record = getReadRecord("db-A", COLLECTION_NAME, "db-A.c1.name:new-name,*.c1.new-active:new_active", obj);
+
+        Struct value = (Struct) record.value();
+        assertThat(value.get(AFTER)).isEqualTo(expected);
+    }
+
+    @Test
+    @FixFor("DBZ-5328")
+    public void shouldRenameFieldsIncludingDashesForInsertEvent() throws Exception {
+        ObjectId objId = new ObjectId();
+        Document obj = new Document()
+                .append("_id", objId)
+                .append("name", "Sally")
+                .append("phone", 123L)
+                .append("new-active", true)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6));
+
+        // @formatter:off
+        String expected = "{"
+                +     "\"_id\": {\"$oid\": \"" + objId + "\"},"
+                +     "\"phone\": {\"$numberLong\": \"123\"},"
+                +     "\"scores\": [1.2,3.4,5.6],"
+                +     "\"new-name\": \"Sally\","
+                +     "\"new_active\": true"
+                + "}";
+        // @formatter:on
+
+        SourceRecord record = getInsertRecord("db-A", COLLECTION_NAME, "db-A.c1.name:new-name,*.c1.new-active:new_active", obj);
+
+        Struct value = (Struct) record.value();
+        assertThat(value.get(AFTER)).isEqualTo(expected);
+    }
+
+    @Test
+    @FixFor("DBZ-5328")
+    public void shouldRenameNestedFieldsIncludingDashesForInsertEvent() throws Exception {
+        ObjectId objId = new ObjectId();
+        Document obj = new Document()
+                .append("_id", objId)
+                .append("name", "Sally")
+                .append("phone", 123L)
+                .append("address", new Document()
+                        .append("number", 34L)
+                        .append("street", "Claude Debussylaan")
+                        .append("city", "Amsterdam"))
+                .append("new-active", true)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6));
+
+        // @formatter:off
+        String expected = "{"
+                +     "\"_id\": {\"$oid\": \"" + objId + "\"},"
+                +     "\"phone\": {\"$numberLong\": \"123\"},"
+                +     "\"address\": {"
+                +         "\"street\": \"Claude Debussylaan\","
+                +         "\"city\": \"Amsterdam\","
+                +         "\"new-number\": {\"$numberLong\": \"34\"}"
+                +     "},"
+                +     "\"scores\": [1.2,3.4,5.6],"
+                +     "\"new-name\": \"Sally\","
+                +     "\"new_active\": true"
+                + "}";
+        // @formatter:on
+
+        SourceRecord record = getInsertRecord("db-A", COLLECTION_NAME,
+                "*.c1.name:new-name,*.c1.new-active:new_active,*.c1.address.number:new-number", obj);
+
+        Struct value = (Struct) record.value();
+        assertThat(value.get(AFTER)).isEqualTo(expected);
+    }
+
+    @Test
+    @FixFor("DBZ-5328")
+    public void shouldRenameFieldsIncludingDashesForUpdateEvent() throws Exception {
+        ObjectId objId = new ObjectId();
+        Document obj = new Document()
+                .append("_id", objId)
+                .append("name", "Sally May")
+                .append("phone", 456L)
+                .append("new-active", false)
+                .append("scores", Arrays.asList(1.2, 3.4, 5.6, 7.8));
+
+        Document updateObj = new Document()
+                .append("$set", new Document()
+                        .append("name", "Sally")
+                        .append("phone", 123L)
+                        .append("new-active", true)
+                        .append("scores", Arrays.asList(1.2, 3.4, 5.6)));
+
+        // @formatter:off
+        String patch = "{"
+                +     "\"$v\": 1,"
+                +     "\"$set\": {"
+                +          "\"phone\": {\"$numberLong\": \"123\"},"
+                +          "\"scores\": [1.2,3.4,5.6],"
+                +          "\"new-name\": \"Sally\","
+                +          "\"new_active\": true"
+                +     "}"
+                + "}";
+        String full = "{"
+                +    "\"_id\": {\"$oid\": \"<OID>\"}, "
+                +    "\"phone\": {\"$numberLong\": \"123\"}, "
+                +    "\"scores\": [1.2, 3.4, 5.6], "
+                +    "\"new-name\": \"Sally\", "
+                +    "\"new_active\": true"
+                + "}";
+        final String updated = "{"
+                +             "\"phone\": 123, "
+                +             "\"scores\": [1.2, 3.4, 5.6], "
+                +             "\"new-name\": \"Sally\", "
+                +             "\"new_active\": true"
+                + "}";
+        // @formatter:on
+
+        SourceRecord record = getUpdateRecord("db-A", COLLECTION_NAME, "*.c1.name:new-name,*.c1.new-active:new_active", obj, updateObj);
+
+        assertUpdateRecord(objId, record, new ExpectedUpdate(patch, full, updated, null));
+    }
+
     private static Document getFilterFromId(ObjectId id) {
         return Document.parse("{\"" + ID + "\": {\"$oid\": \"" + id + "\"}}");
     }
@@ -1680,13 +1807,13 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
     private static Document getDocumentFromUpdateRecord(Struct value) {
         assertThat(value).isNotNull();
 
-        final String patch = value.getString(TestHelper.isOplogCaptureMode() ? PATCH : AFTER);
-        assertThat(patch).isNotNull();
+        final String after = value.getString(AFTER);
+        assertThat(after).isNotNull();
 
         // By parsing the patch string, we can remove the $v internal key added by the driver that specifies the
         // language version used to manipulate the document. The goal by removing this key is that the original
         // document used to update the database entry can be compared directly.
-        Document parsed = Document.parse(patch);
+        Document parsed = Document.parse(after);
         parsed.remove("$v");
         return parsed;
     }
@@ -1696,9 +1823,10 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
     }
 
     private static Configuration getConfiguration(String fieldRenames, String database, String collection) {
-        Configuration.Builder builder = TestHelper.getConfiguration().edit()
+        Configuration.Builder builder = TestHelper.getConfiguration(mongo).edit()
                 .with(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST, database + "." + collection)
-                .with(MongoDbConnectorConfig.LOGICAL_NAME, SERVER_NAME);
+                .with(CommonConnectorConfig.TOPIC_PREFIX, SERVER_NAME)
+                .with(CommonConnectorConfig.SCHEMA_NAME_ADJUSTMENT_MODE, SchemaNameAdjustmentMode.AVRO);
 
         if (fieldRenames != null && !"".equals(fieldRenames.trim())) {
             builder = builder.with(MongoDbConnectorConfig.FIELD_RENAMES, fieldRenames);
@@ -1716,7 +1844,7 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
         config = getConfiguration(fieldRenames, database, collection);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), database);
+        TestHelper.cleanDatabase(mongo, database);
 
         dropAndInsertDocuments(database, collection, document);
 
@@ -1737,7 +1865,7 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
         config = getConfiguration(fieldRenames, database, collection);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), database);
+        TestHelper.cleanDatabase(mongo, database);
 
         insertDocuments(database, collection, document);
 
@@ -1786,7 +1914,7 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
         config = getConfiguration(renamesList);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), DATABASE_NAME);
+        TestHelper.cleanDatabase(mongo, DATABASE_NAME);
 
         dropAndInsertDocuments(DATABASE_NAME, COLLECTION_NAME, snapshot);
 
@@ -1802,7 +1930,7 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
         config = getConfiguration(renamesList);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), DATABASE_NAME);
+        TestHelper.cleanDatabase(mongo, DATABASE_NAME);
 
         logInterceptor = new LogInterceptor(FieldRenamesIT.class);
         start(MongoDbConnector.class, config);
@@ -1841,15 +1969,7 @@ public class FieldRenamesIT extends AbstractMongoConnectorIT {
     private void assertUpdateRecord(ObjectId objectId, SourceRecord record, ExpectedUpdate expected) throws InterruptedException {
         Struct value = (Struct) record.value();
 
-        if (TestHelper.isOplogCaptureMode()) {
-            final Document expectedDoc = TestHelper
-                    .getDocumentWithoutLanguageVersion(expected.patch);
-            final Document actualDoc = TestHelper.getDocumentWithoutLanguageVersion(value.getString(PATCH));
-            assertThat(actualDoc).isEqualTo(expectedDoc);
-        }
-        else {
-            TestHelper.assertChangeStreamUpdateAsDocs(objectId, value, expected.full, expected.removedFields,
-                    expected.updatedFields);
-        }
+        TestHelper.assertChangeStreamUpdateAsDocs(objectId, value, expected.full, expected.removedFields,
+                expected.updatedFields);
     }
 }

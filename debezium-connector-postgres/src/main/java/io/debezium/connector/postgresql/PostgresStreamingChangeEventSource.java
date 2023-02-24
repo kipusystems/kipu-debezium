@@ -67,6 +67,12 @@ public class PostgresStreamingChangeEventSource implements StreamingChangeEventS
     private final DelayStrategy pauseNoMessage;
     private final ElapsedTimeStrategy connectionProbeTimer;
 
+    // Offset committing is an asynchronous operation.
+    // When connector is restarted we cannot be sure about timing of recovery, offset committing etc.
+    // as this is driven by Kafka Connect. This might be a root cause of DBZ-5163.
+    // This flag will ensure that LSN is flushed only if we are really in message processing mode.
+    private volatile boolean lsnFlushingAllowed = false;
+
     /**
      * The minimum of (number of event received since the last event sent to Kafka,
      * number of event received since last WAL growing warning issued).
@@ -83,7 +89,7 @@ public class PostgresStreamingChangeEventSource implements StreamingChangeEventS
         this.errorHandler = errorHandler;
         this.clock = clock;
         this.schema = schema;
-        pauseNoMessage = DelayStrategy.constant(taskContext.getConfig().getPollInterval().toMillis());
+        pauseNoMessage = DelayStrategy.constant(taskContext.getConfig().getPollInterval());
         this.taskContext = taskContext;
         this.snapshotter = snapshotter;
         this.replicationConnection = replicationConnection;
@@ -110,6 +116,8 @@ public class PostgresStreamingChangeEventSource implements StreamingChangeEventS
             return;
         }
 
+        lsnFlushingAllowed = false;
+
         // replication slot could exist at the time of starting Debezium so we will stream from the position in the slot
         // instead of the last position in the database
         boolean hasStartLsnStoredInContext = offsetContext != null;
@@ -124,8 +132,9 @@ public class PostgresStreamingChangeEventSource implements StreamingChangeEventS
             if (hasStartLsnStoredInContext) {
                 // start streaming from the last recorded position in the offset
                 final Lsn lsn = offsetContext.lastCompletelyProcessedLsn() != null ? offsetContext.lastCompletelyProcessedLsn() : offsetContext.lsn();
+                final Operation lastProcessedMessageType = offsetContext.lastProcessedMessageType();
                 LOGGER.info("Retrieved latest position from stored offset '{}'", lsn);
-                walPosition = new WalPositionLocator(offsetContext.lastCommitLsn(), lsn);
+                walPosition = new WalPositionLocator(offsetContext.lastCommitLsn(), lsn, lastProcessedMessageType);
                 replicationStream.compareAndSet(null, replicationConnection.startStreaming(lsn, walPosition));
             }
             else {
@@ -225,19 +234,21 @@ public class PostgresStreamingChangeEventSource implements StreamingChangeEventS
 
                     offsetContext.updateWalPosition(lsn, lastCompletelyProcessedLsn, message.getCommitTime(), toLong(message.getTransactionId()),
                             taskContext.getSlotXmin(connection),
-                            null);
+                            null,
+                            message.getOperation());
                     if (message.getOperation() == Operation.BEGIN) {
-                        dispatcher.dispatchTransactionStartedEvent(partition, toString(message.getTransactionId()), offsetContext);
+                        dispatcher.dispatchTransactionStartedEvent(partition, toString(message.getTransactionId()), offsetContext, message.getCommitTime());
                     }
                     else if (message.getOperation() == Operation.COMMIT) {
                         commitMessage(partition, offsetContext, lsn);
-                        dispatcher.dispatchTransactionCommittedEvent(partition, offsetContext);
+                        dispatcher.dispatchTransactionCommittedEvent(partition, offsetContext, message.getCommitTime());
                     }
                     maybeWarnAboutGrowingWalBacklog(true);
                 }
                 else if (message.getOperation() == Operation.MESSAGE) {
                     offsetContext.updateWalPosition(lsn, lastCompletelyProcessedLsn, message.getCommitTime(), toLong(message.getTransactionId()),
-                            taskContext.getSlotXmin(connection));
+                            taskContext.getSlotXmin(connection),
+                            message.getOperation());
 
                     // non-transactional message that will not be followed by a COMMIT message
                     if (message.isLastEventForLsn()) {
@@ -262,7 +273,8 @@ public class PostgresStreamingChangeEventSource implements StreamingChangeEventS
 
                     offsetContext.updateWalPosition(lsn, lastCompletelyProcessedLsn, message.getCommitTime(), toLong(message.getTransactionId()),
                             taskContext.getSlotXmin(connection),
-                            tableId);
+                            tableId,
+                            message.getOperation());
 
                     boolean dispatched = message.getOperation() != Operation.NOOP && dispatcher.dispatchDataChangeEvent(
                             partition,
@@ -285,6 +297,7 @@ public class PostgresStreamingChangeEventSource implements StreamingChangeEventS
 
             if (receivedMessage) {
                 noMessageIterations = 0;
+                lsnFlushingAllowed = true;
             }
             else {
                 if (offsetContext.hasCompletelyProcessedPosition()) {
@@ -386,14 +399,20 @@ public class PostgresStreamingChangeEventSource implements StreamingChangeEventS
     }
 
     @Override
-    public void commitOffset(Map<String, ?> offset) {
+    public void commitOffset(Map<String, ?> partition, Map<String, ?> offset) {
         try {
             ReplicationStream replicationStream = this.replicationStream.get();
             final Lsn commitLsn = Lsn.valueOf((Long) offset.get(PostgresOffsetContext.LAST_COMMIT_LSN_KEY));
             final Lsn changeLsn = Lsn.valueOf((Long) offset.get(PostgresOffsetContext.LAST_COMPLETELY_PROCESSED_LSN_KEY));
             final Lsn lsn = (commitLsn != null) ? commitLsn : changeLsn;
 
+            LOGGER.debug("Received offset commit request on commit LSN '{}' and change LSN '{}'", commitLsn, changeLsn);
             if (replicationStream != null && lsn != null) {
+                if (!lsnFlushingAllowed) {
+                    LOGGER.info("Received offset commit request on '{}', but ignoring it. LSN flushing is not allowed yet", lsn);
+                    return;
+                }
+
                 if (LOGGER.isDebugEnabled()) {
                     LOGGER.debug("Flushing LSN to server: {}", lsn);
                 }
@@ -435,7 +454,7 @@ public class PostgresStreamingChangeEventSource implements StreamingChangeEventS
     }
 
     @FunctionalInterface
-    public static interface PgConnectionSupplier {
+    public interface PgConnectionSupplier {
         BaseConnection get() throws SQLException;
     }
 }

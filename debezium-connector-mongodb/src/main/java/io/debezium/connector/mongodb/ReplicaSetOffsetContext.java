@@ -7,20 +7,20 @@ package io.debezium.connector.mongodb;
 
 import java.time.Instant;
 import java.util.Map;
-import java.util.OptionalLong;
 
 import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.data.Struct;
+import org.bson.BsonDocument;
 import org.bson.BsonTimestamp;
-import org.bson.Document;
 
+import com.mongodb.client.MongoChangeStreamCursor;
 import com.mongodb.client.model.changestream.ChangeStreamDocument;
 
 import io.debezium.annotation.ThreadSafe;
+import io.debezium.pipeline.CommonOffsetContext;
 import io.debezium.pipeline.source.snapshot.incremental.IncrementalSnapshotContext;
 import io.debezium.pipeline.spi.OffsetContext;
 import io.debezium.pipeline.txmetadata.TransactionContext;
-import io.debezium.schema.DataCollectionId;
+import io.debezium.spi.schema.DataCollectionId;
 
 /**
  * An {@link OffsetContext} implementation that is specific to a single {@link ReplicaSet}.
@@ -32,18 +32,17 @@ import io.debezium.schema.DataCollectionId;
  * @author Chris Cranford
  */
 @ThreadSafe
-public class ReplicaSetOffsetContext implements OffsetContext {
+public class ReplicaSetOffsetContext extends CommonOffsetContext<SourceInfo> {
 
     private final MongoDbOffsetContext offsetContext;
     private final String replicaSetName;
-    private final SourceInfo sourceInfo;
     private final IncrementalSnapshotContext<CollectionId> incrementalSnapshotContext;
 
     public ReplicaSetOffsetContext(MongoDbOffsetContext offsetContext, ReplicaSet replicaSet, SourceInfo sourceInfo,
                                    IncrementalSnapshotContext<CollectionId> incrementalSnapshotContext) {
+        super(sourceInfo);
         this.offsetContext = offsetContext;
         this.replicaSetName = replicaSet.replicaSetName();
-        this.sourceInfo = sourceInfo;
         this.incrementalSnapshotContext = incrementalSnapshotContext;
     }
 
@@ -61,18 +60,8 @@ public class ReplicaSetOffsetContext implements OffsetContext {
     }
 
     @Override
-    public Struct getSourceInfo() {
-        return offsetContext.getSourceInfo();
-    }
-
-    @Override
     public boolean isSnapshotRunning() {
         return offsetContext.isSnapshotRunning();
-    }
-
-    @Override
-    public void markLastSnapshotRecord() {
-        offsetContext.markLastSnapshotRecord();
     }
 
     @Override
@@ -83,11 +72,6 @@ public class ReplicaSetOffsetContext implements OffsetContext {
     @Override
     public void preSnapshotCompletion() {
         offsetContext.preSnapshotCompletion();
-    }
-
-    @Override
-    public void postSnapshotCompletion() {
-        offsetContext.postSnapshotCompletion();
     }
 
     @Override
@@ -114,43 +98,24 @@ public class ReplicaSetOffsetContext implements OffsetContext {
     }
 
     public void readEvent(CollectionId collectionId, Instant timestamp) {
-        sourceInfo.collectionEvent(replicaSetName, collectionId);
+        sourceInfo.collectionEvent(replicaSetName, collectionId, 0L);
         sourceInfo.lastOffset(replicaSetName);
     }
 
-    public void oplogEvent(Document oplogEvent, Document masterEvent, Long txOrder) {
-        sourceInfo.opLogEvent(replicaSetName, oplogEvent, masterEvent, txOrder);
+    public void noEvent(MongoChangeStreamCursor<?> cursor) {
+        sourceInfo.noEvent(replicaSetName, cursor);
     }
 
-    public void changeStreamEvent(ChangeStreamDocument<Document> changeStreamEvent, OptionalLong txOrder) {
-        sourceInfo.changeStreamEvent(replicaSetName, changeStreamEvent, txOrder.orElse(0));
+    public void changeStreamEvent(ChangeStreamDocument<BsonDocument> changeStreamEvent) {
+        sourceInfo.changeStreamEvent(replicaSetName, changeStreamEvent);
     }
 
     public BsonTimestamp lastOffsetTimestamp() {
         return sourceInfo.lastOffsetTimestamp(replicaSetName);
     }
 
-    public OptionalLong lastOffsetTxOrder() {
-        return sourceInfo.lastOffsetTxOrder(replicaSetName);
-    }
-
     public String lastResumeToken() {
         return sourceInfo.lastResumeToken(replicaSetName);
-    }
-
-    public boolean isFromOplog() {
-        return sourceInfo != null && sourceInfo.lastPosition(replicaSetName) != null
-                && sourceInfo.lastPosition(replicaSetName).getOperationId() != null
-                && sourceInfo.lastResumeToken(replicaSetName) == null;
-    }
-
-    public boolean isFromChangeStream() {
-        return sourceInfo != null && sourceInfo.lastResumeToken(replicaSetName) != null;
-    }
-
-    @Override
-    public void incrementalSnapshotEvents() {
-        offsetContext.incrementalSnapshotEvents();
     }
 
     @Override

@@ -5,7 +5,7 @@
  */
 package io.debezium.connector.mysql;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Collections;
@@ -17,11 +17,12 @@ import java.util.function.Predicate;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
-import org.fest.assertions.GenericAssert;
+import org.assertj.core.api.AbstractAssert;
 import org.junit.Before;
 import org.junit.Test;
 
 import io.confluent.connect.avro.AvroData;
+import io.debezium.config.CommonConnectorConfig;
 import io.debezium.config.Configuration;
 import io.debezium.connector.AbstractSourceInfoStructMaker;
 import io.debezium.data.VerifyRecord;
@@ -45,7 +46,7 @@ public class SourceInfoTest {
     @Before
     public void beforeEach() {
         offsetContext = MySqlOffsetContext.initial(new MySqlConnectorConfig(Configuration.create()
-                .with(MySqlConnectorConfig.SERVER_NAME, "server")
+                .with(CommonConnectorConfig.TOPIC_PREFIX, "server")
                 .build()));
         source = offsetContext.getSource();
         inTxn = false;
@@ -445,7 +446,7 @@ public class SourceInfoTest {
 
     protected SourceInfo sourceWith(Map<String, String> offset) {
         offsetContext = (MySqlOffsetContext) new MySqlOffsetContext.Loader(new MySqlConnectorConfig(Configuration.create()
-                .with(MySqlConnectorConfig.SERVER_NAME, SERVER_NAME)
+                .with(CommonConnectorConfig.TOPIC_PREFIX, SERVER_NAME)
                 .build())).load(offset);
         source = offsetContext.getSource();
         source.databaseEvent("mysql");
@@ -559,6 +560,35 @@ public class SourceInfoTest {
         assertThatDocument(current).isAfter(history);
         Set<String> excludes = Collections.singleton("96c2072e-e428-11e6-9590-42010a28002d");
         assertThatDocument(history).isAtOrBefore(current, (uuid) -> !excludes.contains(uuid));
+    }
+
+    @Test
+    public void shouldComparePositionsWithDifferentFilenames() {
+        Document history = positionWithoutGtids("mysql-bin.000001", 1, 0, 0);
+        assertThatDocument(history).isAtOrBefore(positionWithoutGtids("mysql-bin.000001", 1, 0, 0));
+        assertThatDocument(history).isAtOrBefore(positionWithoutGtids("mysql-bin.000002", 1, 0, 0));
+
+        history = positionWithoutGtids("mysql-bin.200001", 1, 0, 0);
+        assertThatDocument(history).isAfter(positionWithoutGtids("mysql-bin.100001", 1, 0, 0));
+        assertThatDocument(history).isAtOrBefore(positionWithoutGtids("mysql-bin.1000111", 1, 0, 0));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldNotComparePositionsWithDifferentFilenameFormats() {
+        Document history = positionWithoutGtids("mysql-bin.000001", 1, 0, 0);
+        assertThatDocument(history).isAtOrBefore(positionWithoutGtids("mysql-binlog-filename.000001", 1, 0, 0));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldNotComparePositionsWithInvalidFilenameFormat() {
+        Document history = positionWithoutGtids("mysql-bin.000001", 1, 0, 0);
+        assertThatDocument(history).isAtOrBefore(positionWithoutGtids("mysql-bin", 1, 0, 0));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldNotComparePositionsWithNotNumericFilenameExtension() {
+        Document history = positionWithoutGtids("mysql-bin.000001", 1, 0, 0);
+        assertThatDocument(history).isAtOrBefore(positionWithoutGtids("mysql-bin.not-numeric", 1, 0, 0));
     }
 
     @FixFor("DBZ-107")
@@ -690,9 +720,9 @@ public class SourceInfoTest {
         return assertThatDocument(positionWithoutGtids(filename, position, event, row, snapshot));
     }
 
-    protected static class PositionAssert extends GenericAssert<PositionAssert, Document> {
+    protected static class PositionAssert extends AbstractAssert<PositionAssert, Document> {
         public PositionAssert(Document position) {
-            super(PositionAssert.class, position);
+            super(position, PositionAssert.class);
         }
 
         public PositionAssert isAt(Document otherPosition) {
@@ -704,8 +734,8 @@ public class SourceInfoTest {
             if (comparator.isPositionAtOrBefore(actual, otherPosition)) {
                 return this;
             }
-            failIfCustomMessageIsSet();
-            throw failure(actual + " should be consider same position as " + otherPosition);
+            failWithMessage(actual + " should be consider same position as " + otherPosition);
+            return this;
         }
 
         public PositionAssert isBefore(Document otherPosition) {
@@ -722,11 +752,10 @@ public class SourceInfoTest {
 
         public PositionAssert isAtOrBefore(Document otherPosition, Predicate<String> gtidFilter) {
             final MySqlHistoryRecordComparator comparator = new MySqlHistoryRecordComparator(gtidFilter);
-            if (comparator.isPositionAtOrBefore(actual, otherPosition)) {
-                return this;
+            if (!comparator.isPositionAtOrBefore(actual, otherPosition)) {
+                failWithMessage(actual + " should be consider same position as or before " + otherPosition);
             }
-            failIfCustomMessageIsSet();
-            throw failure(actual + " should be consider same position as or before " + otherPosition);
+            return this;
         }
 
         public PositionAssert isAfter(Document otherPosition) {
@@ -735,11 +764,10 @@ public class SourceInfoTest {
 
         public PositionAssert isAfter(Document otherPosition, Predicate<String> gtidFilter) {
             final MySqlHistoryRecordComparator comparator = new MySqlHistoryRecordComparator(gtidFilter);
-            if (!comparator.isPositionAtOrBefore(actual, otherPosition)) {
-                return this;
+            if (comparator.isPositionAtOrBefore(actual, otherPosition)) {
+                failWithMessage(actual + " should be consider after " + otherPosition);
             }
-            failIfCustomMessageIsSet();
-            throw failure(actual + " should be consider after " + otherPosition);
+            return this;
         }
     }
 }

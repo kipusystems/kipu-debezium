@@ -36,6 +36,7 @@ import io.debezium.connector.oracle.logminer.processor.LogMinerEventProcessor;
 import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.source.spi.ChangeEventSource.ChangeEventSourceContext;
 import io.debezium.relational.TableId;
+import io.debezium.util.Loggings;
 
 /**
  * A {@link LogMinerEventProcessor} that uses the JVM heap to store events as they're being
@@ -107,20 +108,23 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
                         if (transaction != null && transaction.removeEventWithRowId(row.getRowId())) {
                             // We successfully found a transaction with the same XISUSN and XIDSLT and that
                             // transaction included a change for the specified row id.
-                            LOGGER.debug("Undo change '{}' applied to transaction '{}'", row, transactionKey);
+                            Loggings.logDebugAndTraceRecord(LOGGER, row, "Undo change on table '{}' was applied to transaction '{}'", row.getTableId(), transactionKey);
                             return;
                         }
                     }
                 }
-                LOGGER.warn("Cannot undo change '{}' since event with row-id {} was not found.", row, row.getRowId());
+                Loggings.logWarningAndTraceRecord(LOGGER, row, "Cannot undo change on table '{}' since event with row-id {} was not found", row.getTableId(),
+                        row.getRowId());
             }
-            else {
-                LOGGER.warn("Cannot undo change '{}' since transaction was not found.", row);
+            else if (!getConfig().isLobEnabled()) {
+                Loggings.logWarningAndTraceRecord(LOGGER, row, "Cannot undo change on table '{}' since transaction '{}' was not found.", row.getTableId(),
+                        row.getTransactionId());
             }
         }
         else {
             if (!transaction.removeEventWithRowId(row.getRowId())) {
-                LOGGER.warn("Cannot undo change '{}' since event with row-id {} was not found.", row, row.getRowId());
+                Loggings.logWarningAndTraceRecord(LOGGER, row, "Cannot undo change on table '{}' since event with row-id {} was not found.", row.getTableId(),
+                        row.getRowId());
             }
         }
     }
@@ -205,7 +209,9 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
     protected void finalizeTransactionRollback(String transactionId, Scn rollbackScn) {
         transactionCache.remove(transactionId);
         abandonedTransactionsCache.remove(transactionId);
-        recentlyProcessedTransactionsCache.put(transactionId, rollbackScn);
+        if (getConfig().isLobEnabled()) {
+            recentlyProcessedTransactionsCache.put(transactionId, rollbackScn);
+        }
     }
 
     @Override
@@ -230,6 +236,11 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
                 getTransactionCache().put(transactionId, transaction);
             }
 
+            if (isTransactionOverEventThreshold(transaction)) {
+                abandonTransactionOverEventThreshold(transaction);
+                return;
+            }
+
             int eventId = transaction.getNextEventId();
             if (transaction.getEvents().size() <= eventId) {
                 // Add new event at eventId offset
@@ -240,7 +251,10 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
 
             metrics.setActiveTransactions(getTransactionCache().size());
         }
-        else {
+        else if (!getConfig().isLobEnabled()) {
+            // Explicitly only log this warning when LobEnabled is false because its commonplace for a
+            // transaction to be re-mined and therefore seen as already processed until the SCN low
+            // watermark is advanced after a long transaction is committed.
             LOGGER.warn("Event for transaction {} has already been processed, skipped.", transactionId);
         }
     }
@@ -252,7 +266,7 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
 
     @Override
     protected PreparedStatement createQueryStatement() throws SQLException {
-        final String query = LogMinerQueryBuilder.build(getConfig(), getSchema());
+        final String query = LogMinerQueryBuilder.build(getConfig());
         return jdbcConnection.connection().prepareStatement(query,
                 ResultSet.TYPE_FORWARD_ONLY,
                 ResultSet.CONCUR_READ_ONLY,
@@ -323,6 +337,12 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
             metrics.incrementErrorCount();
             return Optional.of(offsetScn);
         }
+    }
+
+    @Override
+    protected void abandonTransactionOverEventThreshold(MemoryTransaction transaction) {
+        super.abandonTransactionOverEventThreshold(transaction);
+        abandonedTransactionsCache.add(transaction.getTransactionId());
     }
 
     @Override

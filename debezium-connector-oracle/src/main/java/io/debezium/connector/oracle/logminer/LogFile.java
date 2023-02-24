@@ -28,6 +28,7 @@ public class LogFile {
     private final BigInteger sequence;
     private final boolean current;
     private final Type type;
+    private final int thread;
 
     /**
      * Create a log file that represents an archived log record.
@@ -38,8 +39,8 @@ public class LogFile {
      * @param sequence the unique log sequence number
      * @param type the log type
      */
-    public LogFile(String fileName, Scn firstScn, Scn nextScn, BigInteger sequence, Type type) {
-        this(fileName, firstScn, nextScn, sequence, type, false);
+    public LogFile(String fileName, Scn firstScn, Scn nextScn, BigInteger sequence, Type type, int thread) {
+        this(fileName, firstScn, nextScn, sequence, type, false, thread);
     }
 
     /**
@@ -52,13 +53,14 @@ public class LogFile {
      * @param type the type of archive log
      * @param current whether the log file is the current one
      */
-    public LogFile(String fileName, Scn firstScn, Scn nextScn, BigInteger sequence, Type type, boolean current) {
+    public LogFile(String fileName, Scn firstScn, Scn nextScn, BigInteger sequence, Type type, boolean current, int thread) {
         this.fileName = fileName;
         this.firstScn = firstScn;
         this.nextScn = nextScn;
         this.sequence = sequence;
         this.current = current;
         this.type = type;
+        this.thread = thread;
     }
 
     public String getFileName() {
@@ -77,6 +79,10 @@ public class LogFile {
         return sequence;
     }
 
+    public int getThread() {
+        return thread;
+    }
+
     /**
      * Returns whether this log file instance is considered the current online redo log record.
      */
@@ -88,9 +94,13 @@ public class LogFile {
         return type;
     }
 
+    public boolean isScnInLogFileRange(Scn scn) {
+        return getFirstScn().compareTo(scn) <= 0 && (getNextScn().compareTo(scn) > 0 || getNextScn().equals(Scn.MAX));
+    }
+
     @Override
     public int hashCode() {
-        return Objects.hash(sequence);
+        return Objects.hash(thread, sequence);
     }
 
     @Override
@@ -102,6 +112,19 @@ public class LogFile {
             return false;
         }
         final LogFile other = (LogFile) obj;
-        return Objects.equals(sequence, other.sequence);
+        return thread == other.thread && Objects.equals(sequence, other.sequence);
+    }
+
+    @Override
+    public String toString() {
+        return "LogFile{" +
+                "fileName='" + fileName + '\'' +
+                ", firstScn=" + firstScn +
+                ", nextScn=" + nextScn +
+                ", sequence=" + sequence +
+                ", current=" + current +
+                ", type=" + type +
+                ", thread=" + thread +
+                '}';
     }
 }

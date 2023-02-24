@@ -5,7 +5,7 @@
  */
 package io.debezium.connector.oracle;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -44,14 +44,11 @@ public class LogMinerHelperIT extends AbstractConnectorTest {
 
     @BeforeClass
     public static void beforeSuperClass() throws SQLException {
-        try (OracleConnection adminConnection = TestHelper.adminConnection()) {
-            adminConnection.resetSessionToCdb();
+        try (OracleConnection adminConnection = TestHelper.adminConnection(true)) {
             LogMinerHelper.removeLogFilesFromMining(adminConnection);
         }
 
-        conn = TestHelper.defaultConnection();
-        conn.resetSessionToCdb();
-
+        conn = TestHelper.defaultConnection(true);
         TestHelper.forceFlushOfRedoLogsToArchiveLogs();
     }
 
@@ -66,25 +63,27 @@ public class LogMinerHelperIT extends AbstractConnectorTest {
     public void before() throws SQLException {
         setConsumeTimeout(TestHelper.defaultMessageConsumerPollTimeout(), TimeUnit.SECONDS);
         initializeConnectorTestFramework();
-        Testing.Files.delete(TestHelper.DB_HISTORY_PATH);
+        Testing.Files.delete(TestHelper.SCHEMA_HISTORY_PATH);
     }
 
     @Test
     @FixFor("DBZ-3256")
     public void shouldAddCorrectLogFiles() throws Exception {
+        final int instances = getNumberOfInstances(conn);
+
         // case 1 : oldest scn = current scn
         Scn currentScn = conn.getCurrentScn();
         List<LogFile> files = LogMinerHelper.getLogFilesForOffsetScn(conn, currentScn, Duration.ofHours(0L), false, null);
-        assertThat(files).hasSize(1); // just the current redo log
+        assertThat(files).hasSize(instances); // just the current redo log
 
         // case 2 : oldest scn = oldest in not cleared archive
         List<Scn> oneDayArchivedNextScn = getOneDayArchivedLogNextScn(conn);
         Scn oldestArchivedScn = getOldestArchivedScn(oneDayArchivedNextScn);
         files = LogMinerHelper.getLogFilesForOffsetScn(conn, oldestArchivedScn, Duration.ofHours(0L), false, null);
-        assertThat(files.size()).isEqualTo(oneDayArchivedNextScn.size());
+        assertThat(files.size()).isEqualTo(oneDayArchivedNextScn.size() + instances - 1);
 
         files = LogMinerHelper.getLogFilesForOffsetScn(conn, oldestArchivedScn.subtract(Scn.valueOf(1L)), Duration.ofHours(0L), false, null);
-        assertThat(files.size()).isEqualTo(oneDayArchivedNextScn.size() + 1);
+        assertThat(files.size()).isEqualTo(oneDayArchivedNextScn.size() + instances);
     }
 
     @Test
@@ -109,8 +108,7 @@ public class LogMinerHelperIT extends AbstractConnectorTest {
     @FixFor("DBZ-3661")
     public void shouldGetArchiveLogsWithDestinationSpecified() throws Exception {
         // First force all redo logs to be flushed to archives to guarantee there will be some.
-        try (OracleConnection admin = TestHelper.adminConnection()) {
-            admin.resetSessionToCdb();
+        try (OracleConnection admin = TestHelper.adminConnection(true)) {
             admin.execute("ALTER SYSTEM SWITCH ALL LOGFILE");
             // Wait 5 seconds to give Oracle time to toggle the ARC process
             Thread.sleep(5000);
@@ -151,4 +149,15 @@ public class LogMinerHelperIT extends AbstractConnectorTest {
         return allArchivedNextScn;
     }
 
+    private static int getNumberOfInstances(OracleConnection connection) throws SQLException {
+        // In an Oracle RAC environment, there will be multiple instances connected to the database.
+        // This information can be queried from GV$INSTANCE.
+        // For non-RAC environments, there will always just be one record here, the standalone instance.
+        return connection.queryAndMap("SELECT COUNT(1) FROM GV$INSTANCE", rs -> {
+            if (rs.next()) {
+                return rs.getInt(1);
+            }
+            return 0;
+        });
+    }
 }

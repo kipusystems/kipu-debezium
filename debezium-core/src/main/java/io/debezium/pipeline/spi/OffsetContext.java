@@ -11,11 +11,12 @@ import java.util.Map;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
 
+import io.debezium.connector.SnapshotRecord;
 import io.debezium.pipeline.source.snapshot.incremental.IncrementalSnapshotChangeEventSource;
 import io.debezium.pipeline.source.snapshot.incremental.IncrementalSnapshotContext;
 import io.debezium.pipeline.txmetadata.TransactionContext;
 import io.debezium.pipeline.txmetadata.TransactionMonitor;
-import io.debezium.schema.DataCollectionId;
+import io.debezium.spi.schema.DataCollectionId;
 
 /**
  * Keeps track of the current offset within the source DB's change stream. This reflects in the offset as committed to
@@ -46,9 +47,9 @@ public interface OffsetContext {
     boolean isSnapshotRunning();
 
     /**
-     * mark current record as the last one in the snapshot
+     * Mark the position of the record in the snapshot.
      */
-    void markLastSnapshotRecord();
+    void markSnapshotRecord(SnapshotRecord record);
 
     /**
      * Signals that a snapshot will begin, which should reflect in an updated offset state.

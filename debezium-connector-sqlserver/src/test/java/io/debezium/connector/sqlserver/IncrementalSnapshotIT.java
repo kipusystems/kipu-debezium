@@ -7,6 +7,7 @@ package io.debezium.connector.sqlserver;
 
 import java.sql.SQLException;
 import java.util.Arrays;
+import java.util.List;
 
 import org.junit.After;
 import org.junit.Before;
@@ -18,9 +19,11 @@ import io.debezium.connector.sqlserver.util.TestHelper;
 import io.debezium.jdbc.JdbcConnection;
 import io.debezium.junit.SkipTestRule;
 import io.debezium.pipeline.source.snapshot.incremental.AbstractIncrementalSnapshotWithSchemaChangesSupportTest;
+import io.debezium.relational.history.SchemaHistory;
 import io.debezium.util.Testing;
 
 public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchemaChangesSupportTest<SqlServerConnector> {
+    private static final int POLLING_INTERVAL = 1;
 
     private SqlServerConnection connection;
 
@@ -33,11 +36,13 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
         connection = TestHelper.testConnection();
         connection.execute(
                 "CREATE TABLE a (pk int primary key, aa int)",
+                "CREATE TABLE b (pk int primary key, aa int)",
                 "CREATE TABLE debezium_signal (id varchar(64), type varchar(32), data varchar(2048))");
         TestHelper.enableTableCdc(connection, "debezium_signal");
+        TestHelper.adjustCdcPollingInterval(connection, POLLING_INTERVAL);
 
         initializeConnectorTestFramework();
-        Testing.Files.delete(TestHelper.DB_HISTORY_PATH);
+        Testing.Files.delete(TestHelper.SCHEMA_HISTORY_PATH);
     }
 
     @After
@@ -54,6 +59,13 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
     }
 
     @Override
+    protected void populateTables() throws SQLException {
+        super.populateTables();
+        TestHelper.enableTableCdc(connection, "a");
+        TestHelper.enableTableCdc(connection, "b");
+    }
+
+    @Override
     protected Class<SqlServerConnector> connectorClass() {
         return SqlServerConnector.class;
     }
@@ -65,17 +77,27 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
 
     @Override
     protected String topicName() {
-        return "server1.dbo.a";
+        return "server1.testDB1.dbo.a";
+    }
+
+    @Override
+    protected List<String> topicNames() {
+        return List.of("server1.testDB1.dbo.a", "server1.testDB1.dbo.b");
     }
 
     @Override
     protected String tableName() {
-        return "testDB.dbo.a";
+        return "testDB1.dbo.a";
+    }
+
+    @Override
+    protected List<String> tableNames() {
+        return List.of("testDB1.dbo.a", "testDB1.dbo.b");
     }
 
     @Override
     protected String tableName(String table) {
-        return "testDB.dbo." + table;
+        return "testDB1.dbo." + table;
     }
 
     @Override
@@ -129,8 +151,31 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotWithSchema
     protected Builder config() {
         return TestHelper.defaultConfig()
                 .with(SqlServerConnectorConfig.SNAPSHOT_MODE, SnapshotMode.SCHEMA_ONLY)
-                .with(SqlServerConnectorConfig.SIGNAL_DATA_COLLECTION, "testDB.dbo.debezium_signal")
+                .with(SqlServerConnectorConfig.SIGNAL_DATA_COLLECTION, "testDB1.dbo.debezium_signal")
                 .with(SqlServerConnectorConfig.INCREMENTAL_SNAPSHOT_CHUNK_SIZE, 250)
                 .with(SqlServerConnectorConfig.INCREMENTAL_SNAPSHOT_ALLOW_SCHEMA_CHANGES, true);
+    }
+
+    @Override
+    protected Builder mutableConfig(boolean signalTableOnly, boolean storeOnlyCapturedDdl) {
+        final String tableIncludeList;
+        if (signalTableOnly) {
+            tableIncludeList = "dbo.b";
+        }
+        else {
+            tableIncludeList = "dbo.a,dbo.b";
+        }
+        return TestHelper.defaultConfig()
+                .with(SqlServerConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL)
+                .with(SqlServerConnectorConfig.SIGNAL_DATA_COLLECTION, "testDB1.dbo.debezium_signal")
+                .with(SqlServerConnectorConfig.TABLE_INCLUDE_LIST, tableIncludeList)
+                .with(SqlServerConnectorConfig.INCREMENTAL_SNAPSHOT_CHUNK_SIZE, 250)
+                .with(SqlServerConnectorConfig.INCREMENTAL_SNAPSHOT_ALLOW_SCHEMA_CHANGES, true)
+                .with(SchemaHistory.STORE_ONLY_CAPTURED_TABLES_DDL, storeOnlyCapturedDdl);
+    }
+
+    @Override
+    protected void waitForCdcTransactionPropagation(int expectedTransactions) throws Exception {
+        TestHelper.waitForCdcTransactionPropagation(connection, TestHelper.TEST_DATABASE_1, expectedTransactions);
     }
 }

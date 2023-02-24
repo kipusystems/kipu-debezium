@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -18,16 +19,13 @@ import org.apache.kafka.common.config.ConfigValue;
 import org.apache.kafka.connect.connector.Task;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.source.SourceConnector;
-import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.mongodb.MongoException;
 import com.mongodb.client.MongoClient;
-import com.mongodb.client.MongoIterable;
 
 import io.debezium.config.Configuration;
-import io.debezium.connector.mongodb.MongoDbConnectorConfig.CaptureMode;
 import io.debezium.util.Clock;
 import io.debezium.util.LoggingContext.PreviousContext;
 import io.debezium.util.Threads;
@@ -69,7 +67,7 @@ import io.debezium.util.Threads;
  * <h2>Use of Topics</h2>
  * The connector will write to a separate topic all of the source records that correspond to a single collection. The topic will
  * be named "{@code <logicalName>.<databaseName>.<collectionName>}", where {@code <logicalName>} is set via the
- * "{@link MongoDbConnectorConfig#LOGICAL_NAME mongodb.name}" configuration property.
+ * "{@link io.debezium.config.CommonConnectorConfig.TOPIC_PREFIX topic.prefix}" configuration property.
  *
  * <h2>Configuration</h2>
  * <p>
@@ -116,7 +114,7 @@ public class MongoDbConnector extends SourceConnector {
 
         PreviousContext previousLogContext = taskContext.configureLoggingContext("conn");
         try {
-            logger.info("Starting MongoDB connector and discovering replica set(s) at {}", connectionContext.hosts());
+            logger.info("Starting MongoDB connector and discovering replica set(s) at {}", connectionContext.maskedConnectionSeed());
 
             // Set up and start the thread that monitors the members of all of the replica sets ...
             replicaSetMonitorExecutor = Threads.newSingleThreadExecutor(MongoDbConnector.class, taskContext.serverName(), "replica-set-monitor");
@@ -124,7 +122,7 @@ public class MongoDbConnector extends SourceConnector {
             monitorThread = new ReplicaSetMonitorThread(monitor::getReplicaSets, connectionContext.pollInterval(),
                     Clock.SYSTEM, () -> taskContext.configureLoggingContext("disc"), this::replicaSetsChanged);
             replicaSetMonitorExecutor.execute(monitorThread);
-            logger.info("Successfully started MongoDB connector, and continuing to discover changes in replica set(s) at {}", connectionContext.hosts());
+            logger.info("Successfully started MongoDB connector, and continuing to discover changes in replica set(s) at {}", connectionContext.maskedConnectionSeed());
         }
         finally {
             previousLogContext.restore();
@@ -133,7 +131,7 @@ public class MongoDbConnector extends SourceConnector {
 
     protected void replicaSetsChanged(ReplicaSets replicaSets) {
         if (logger.isInfoEnabled()) {
-            logger.info("Requesting task reconfiguration due to new/removed replica set(s) for MongoDB with seeds {}", connectionContext.hosts());
+            logger.info("Requesting task reconfiguration due to new/removed replica set(s) for MongoDB with seeds {}", connectionContext.maskedConnectionSeed());
             logger.info("New replica sets include:");
             replicaSets.onEachReplicaSet(replicaSet -> logger.info("  {}", replicaSet));
         }
@@ -159,6 +157,8 @@ public class MongoDbConnector extends SourceConnector {
                     // Create the configuration for each task ...
                     int taskId = taskConfigs.size();
                     logger.info("Configuring MongoDB connector task {} to capture events for replica set(s) at {}", taskId, replicaSetsForTask.hosts());
+                    Properties configProps = config.asProperties();
+                    configProps.remove(MongoDbConnectorConfig.CONNECTION_STRING.name());
                     taskConfigs.add(config.edit()
                             .with(MongoDbConnectorConfig.HOSTS, replicaSetsForTask.hosts())
                             .with(MongoDbConnectorConfig.TASK_ID, taskId)
@@ -214,6 +214,7 @@ public class MongoDbConnector extends SourceConnector {
         Map<String, ConfigValue> results = config.validate(MongoDbConnectorConfig.EXPOSED_FIELDS);
 
         // Get the config values for each of the connection-related fields ...
+        ConfigValue connectionStringValue = results.get(MongoDbConnectorConfig.CONNECTION_STRING.name());
         ConfigValue hostsValue = results.get(MongoDbConnectorConfig.HOSTS.name());
         ConfigValue userValue = results.get(MongoDbConnectorConfig.USER.name());
         ConfigValue passwordValue = results.get(MongoDbConnectorConfig.PASSWORD.name());
@@ -221,42 +222,13 @@ public class MongoDbConnector extends SourceConnector {
         // If there are no errors on any of these ...
         if (hostsValue.errorMessages().isEmpty()
                 && userValue.errorMessages().isEmpty()
-                && passwordValue.errorMessages().isEmpty()) {
+                && passwordValue.errorMessages().isEmpty()
+                && connectionStringValue.errorMessages().isEmpty()) {
             // Try to connect to the database ...
             try (ConnectionContext connContext = new ConnectionContext(config)) {
-                try (MongoClient client = connContext.clientFor(connContext.hosts())) {
-                    final MongoIterable<String> databaseNames = client.listDatabaseNames();
-                    // Can't use 'local' database through mongos
-                    final String databaseName = MongoUtil.contains(databaseNames, ReplicaSetDiscovery.CONFIG_DATABASE_NAME)
-                            ? ReplicaSetDiscovery.CONFIG_DATABASE_NAME
-                            : "local";
-                    // Oplog mode is not supported for MongoDB 5+
-                    // The version string format is not guaranteed so defensive measures are in place
-                    final Document versionDocument = client.getDatabase(databaseName)
-                            .runCommand(new Document("buildInfo", 1));
-                    if (versionDocument != null) {
-                        final String versionString = versionDocument.getString("version");
-                        if (versionString != null) {
-                            final String[] versionComponents = versionString.split("\\.");
-                            if (versionComponents.length > 0) {
-                                try {
-                                    final int majorVersion = Integer.parseInt(versionComponents[0]);
-                                    final ConfigValue captureModeValue = results
-                                            .get(MongoDbConnectorConfig.CAPTURE_MODE.name());
-                                    final MongoDbConnectorConfig connectorConfig = new MongoDbConnectorConfig(config);
-                                    final CaptureMode captureMode = connectorConfig.getCaptureMode();
-                                    if (majorVersion >= 5
-                                            && captureMode == CaptureMode.OPLOG) {
-                                        captureModeValue.addErrorMessage(
-                                                "The 'oplog' capture mode is not supported for MongoDB 5 and newer; Please use 'change_streams'  or 'change_streams_update_full' instead");
-                                    }
-                                }
-                                catch (NumberFormatException e) {
-                                    // Ignore the exception
-                                }
-                            }
-                        }
-                    }
+
+                try (MongoClient client = connContext.clientForSeedConnection()) {
+                    client.listDatabaseNames();
                 }
             }
             catch (MongoException e) {

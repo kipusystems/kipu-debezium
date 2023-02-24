@@ -33,6 +33,8 @@ pipeline {
                     ./jenkins-jobs/scripts/build-rhel-kafka-image.sh                \\
                         --dir="${WORKSPACE}"                                        \\
                         --archive-urls="${DBZ_CONNECTOR_ARCHIVE_URLS}"              \\
+                        --kafka-url="${KAFKA_URL}"                                  \\
+                        --dbz-scripts="${DBZ_SCRIPTS_VERSION}"                      \\
                         --libs="${DBZ_EXTRA_LIBS}"                                  \\
                         --image="${RHEL_IMAGE}"                                     \\
                         --tags="${EXTRA_IMAGE_TAGS}"                                \\
@@ -50,8 +52,8 @@ pipeline {
 
     post {
         always {
-            mail to: MAIL_TO, subject: "Rhel downstream preparation #${BUILD_NUMBER} finished", body: """
-            ${currentBuild.projectName} run ${BUILD_URL} finished with result: ${currentBuild.currentResult}
+            mail to: params.MAIL_TO, subject: "Rhel downstream preparation #${env.BUILD_NUMBER} finished with ${currentBuild.currentResult}", body: """
+            ${currentBuild.projectName} run ${env.BUILD_URL} finished with result: ${currentBuild.currentResult}
             """
         }
         success {

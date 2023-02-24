@@ -5,7 +5,7 @@
  */
 package io.debezium.embedded;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.fail;
 
 import java.lang.management.ManagementFactory;
@@ -46,6 +46,7 @@ import org.apache.kafka.connect.data.SchemaAndValue;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.json.JsonConverter;
+import org.apache.kafka.connect.json.JsonConverterConfig;
 import org.apache.kafka.connect.json.JsonDeserializer;
 import org.apache.kafka.connect.runtime.WorkerConfig;
 import org.apache.kafka.connect.runtime.standalone.StandaloneConfig;
@@ -55,7 +56,6 @@ import org.apache.kafka.connect.storage.Converter;
 import org.apache.kafka.connect.storage.FileOffsetBackingStore;
 import org.apache.kafka.connect.storage.OffsetStorageReaderImpl;
 import org.awaitility.Awaitility;
-import org.fest.assertions.Assertions;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -64,6 +64,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.debezium.config.Configuration;
+import io.debezium.config.Instantiator;
+import io.debezium.connector.common.BaseSourceTask;
 import io.debezium.data.VerifyRecord;
 import io.debezium.embedded.EmbeddedEngine.CompletionCallback;
 import io.debezium.embedded.EmbeddedEngine.ConnectorCallback;
@@ -99,8 +101,8 @@ public abstract class AbstractConnectorTest implements Testing {
 
     private ExecutorService executor;
     protected EmbeddedEngine engine;
-    private BlockingQueue<SourceRecord> consumedLines;
-    protected long pollTimeoutInMs = TimeUnit.SECONDS.toMillis(5);
+    protected BlockingQueue<SourceRecord> consumedLines;
+    protected long pollTimeoutInMs = TimeUnit.SECONDS.toMillis(10);
     protected final Logger logger = LoggerFactory.getLogger(getClass());
     private CountDownLatch latch;
     private JsonConverter keyJsonConverter = new JsonConverter();
@@ -314,6 +316,19 @@ public abstract class AbstractConnectorTest implements Testing {
      *
      * @param connectorClass the connector class; may not be null
      * @param connectorConfig the configuration for the connector; may not be null
+     * @param changeConsumer {@link io.debezium.engine.DebeziumEngine.ChangeConsumer} invoked when a record arrives and is stored in the queue
+     */
+    protected void start(Class<? extends SourceConnector> connectorClass, Configuration connectorConfig,
+                         DebeziumEngine.ChangeConsumer changeConsumer) {
+        start(connectorClass, connectorConfig, loggingCompletion(), null, x -> {
+        }, true, changeConsumer);
+    }
+
+    /**
+     * Start the connector using the supplied connector configuration.
+     *
+     * @param connectorClass the connector class; may not be null
+     * @param connectorConfig the configuration for the connector; may not be null
      * @param isStopRecord the function that will be called to determine if the connector should be stopped before processing
      *            this record; may be null if not needed
      * @param callback the function that will be called when the engine fails to start the connector or when the connector
@@ -324,6 +339,25 @@ public abstract class AbstractConnectorTest implements Testing {
     protected void start(Class<? extends SourceConnector> connectorClass, Configuration connectorConfig,
                          DebeziumEngine.CompletionCallback callback, Predicate<SourceRecord> isStopRecord,
                          Consumer<SourceRecord> recordArrivedListener, boolean ignoreRecordsAfterStop) {
+        start(connectorClass, connectorConfig, callback, isStopRecord, recordArrivedListener, ignoreRecordsAfterStop, null);
+    }
+
+    /**
+     * Start the connector using the supplied connector configuration.
+     *
+     * @param connectorClass the connector class; may not be null
+     * @param connectorConfig the configuration for the connector; may not be null
+     * @param isStopRecord the function that will be called to determine if the connector should be stopped before processing
+     *            this record; may be null if not needed
+     * @param callback the function that will be called when the engine fails to start the connector or when the connector
+     *            stops running after completing successfully or due to an error; may be null
+     * @param recordArrivedListener function invoked when a record arrives and is stored in the queue
+     * @param ignoreRecordsAfterStop {@code true} if records arriving after stop should be ignored
+     * @param changeConsumer {@link io.debezium.engine.DebeziumEngine.ChangeConsumer} invoked when a record arrives and is stored in the queue
+     */
+    protected void start(Class<? extends SourceConnector> connectorClass, Configuration connectorConfig,
+                         DebeziumEngine.CompletionCallback callback, Predicate<SourceRecord> isStopRecord,
+                         Consumer<SourceRecord> recordArrivedListener, boolean ignoreRecordsAfterStop, DebeziumEngine.ChangeConsumer changeConsumer) {
         Configuration config = Configuration.copy(connectorConfig)
                 .with(EmbeddedEngine.ENGINE_NAME, "testing-connector")
                 .with(EmbeddedEngine.CONNECTOR_CLASS, connectorClass.getName())
@@ -355,28 +389,16 @@ public abstract class AbstractConnectorTest implements Testing {
         };
 
         // Create the connector ...
-        engine = EmbeddedEngine.create()
-                .using(config)
-                .notifying((record) -> {
-                    if (isStopRecord != null && isStopRecord.test(record)) {
-                        logger.error("Stopping connector after record as requested");
-                        throw new ConnectException("Stopping connector after record as requested");
-                    }
-                    // Test stopped the connector, remaining records are ignored
-                    if (ignoreRecordsAfterStop && (!engine.isRunning() || Thread.currentThread().isInterrupted())) {
-                        return;
-                    }
-                    while (!consumedLines.offer(record)) {
-                        if (ignoreRecordsAfterStop && (!engine.isRunning() || Thread.currentThread().isInterrupted())) {
-                            return;
-                        }
-                    }
-                    recordArrivedListener.accept(record);
-                })
+        EmbeddedEngine.Builder builder = EmbeddedEngine.create();
+        builder.using(config)
+                .notifying(getConsumer(isStopRecord, recordArrivedListener, ignoreRecordsAfterStop))
                 .using(this.getClass().getClassLoader())
                 .using(wrapperCallback)
-                .using(connectorCallback)
-                .build();
+                .using(connectorCallback);
+        if (changeConsumer != null) {
+            builder.notifying(changeConsumer);
+        }
+        engine = builder.build();
 
         // Submit the connector for asynchronous execution ...
         assertThat(executor).isNull();
@@ -390,12 +412,55 @@ public abstract class AbstractConnectorTest implements Testing {
                 // maybe it takes more time to start up, so just log a warning and continue
                 logger.warn("The connector did not finish starting its task(s) or complete in the expected amount of time");
             }
+
+            // This allows existing tests to work without modification since they typically assume the
+            // BaseSourceTask#start(Configuration) method has been execute as part of the Task's start method.
+            waitForNotInitialState();
         }
         catch (InterruptedException e) {
             if (Thread.interrupted()) {
                 fail("Interrupted while waiting for engine startup");
             }
         }
+    }
+
+    /**
+     * Wait until the Task state it not {@link BaseSourceTask.State#INITIAL}.
+     * This indicates that the task has been polled and the internal tasks startIfNecessary method has been called.
+     * <p/>
+     * This methos will return immediately if the task is not an instance of  {@link BaseSourceTask}.
+     */
+    protected void waitForNotInitialState() {
+        engine.runWithTask(sourceTask -> {
+            if (sourceTask instanceof BaseSourceTask) {
+                BaseSourceTask<?, ?> baseSourceTask = (BaseSourceTask<?, ?>) sourceTask;
+                Awaitility.await()
+                        .alias("Task has attempted to initialize coordinator")
+                        .pollInterval(100, TimeUnit.MILLISECONDS)
+                        .atMost(waitTimeForRecords() * 30L, TimeUnit.SECONDS)
+                        .until(() -> baseSourceTask.getTaskState() != BaseSourceTask.State.INITIAL);
+
+            }
+        });
+    }
+
+    protected Consumer<SourceRecord> getConsumer(Predicate<SourceRecord> isStopRecord, Consumer<SourceRecord> recordArrivedListener, boolean ignoreRecordsAfterStop) {
+        return (record) -> {
+            if (isStopRecord != null && isStopRecord.test(record)) {
+                logger.error("Stopping connector after record as requested");
+                throw new ConnectException("Stopping connector after record as requested");
+            }
+            // Test stopped the connector, remaining records are ignored
+            if (ignoreRecordsAfterStop && (!engine.isRunning() || Thread.currentThread().isInterrupted())) {
+                return;
+            }
+            while (!consumedLines.offer(record)) {
+                if (ignoreRecordsAfterStop && (!engine.isRunning() || Thread.currentThread().isInterrupted())) {
+                    return;
+                }
+            }
+            recordArrivedListener.accept(record);
+        };
     }
 
     /**
@@ -640,11 +705,13 @@ public abstract class AbstractConnectorTest implements Testing {
                 final Struct value = (Struct) record.value();
                 if (isTransactionRecord(record)) {
                     final String status = value.getString(TransactionMonitor.DEBEZIUM_TRANSACTION_STATUS_KEY);
+                    final String txId = value.getString(TransactionMonitor.DEBEZIUM_TRANSACTION_ID_KEY);
+                    String id = Arrays.stream(txId.split(":")).findFirst().get();
                     if (status.equals(TransactionStatus.BEGIN.name())) {
-                        endTransactions.add(value.getString(TransactionMonitor.DEBEZIUM_TRANSACTION_ID_KEY));
+                        endTransactions.add(id);
                     }
                     else {
-                        endTransactions.remove(value.getString(TransactionMonitor.DEBEZIUM_TRANSACTION_ID_KEY));
+                        endTransactions.remove(id);
                     }
                 }
                 else {
@@ -848,7 +915,6 @@ public abstract class AbstractConnectorTest implements Testing {
 
     /**
      * Disable record validation using Avro converter.
-     * Introduced to workaround https://github.com/confluentinc/schema-registry/issues/1693
      */
     protected void skipAvroValidation() {
         skipAvroValidation = true;
@@ -1037,16 +1103,11 @@ public abstract class AbstractConnectorTest implements Testing {
                 .build();
 
         final String engineName = config.getString(EmbeddedEngine.ENGINE_NAME);
-        Converter keyConverter = config.getInstance(EmbeddedEngine.INTERNAL_KEY_CONVERTER_CLASS, Converter.class);
-        keyConverter.configure(config.subset(EmbeddedEngine.INTERNAL_KEY_CONVERTER_CLASS.name() + ".", true).asMap(), true);
-        Converter valueConverter = config.getInstance(EmbeddedEngine.INTERNAL_VALUE_CONVERTER_CLASS, Converter.class);
-        Configuration valueConverterConfig = config;
-        if (valueConverter instanceof JsonConverter) {
-            // Make sure that the JSON converter is configured to NOT enable schemas ...
-            valueConverterConfig = config.edit().with(EmbeddedEngine.INTERNAL_VALUE_CONVERTER_CLASS + ".schemas.enable", false).build();
-        }
-        valueConverter.configure(valueConverterConfig.subset(EmbeddedEngine.INTERNAL_VALUE_CONVERTER_CLASS.name() + ".", true).asMap(),
-                false);
+        Map<String, String> internalConverterConfig = Collections.singletonMap(JsonConverterConfig.SCHEMAS_ENABLE_CONFIG, "false");
+        Converter keyConverter = Instantiator.getInstance(JsonConverter.class.getName());
+        keyConverter.configure(internalConverterConfig, true);
+        Converter valueConverter = Instantiator.getInstance(JsonConverter.class.getName());
+        valueConverter.configure(internalConverterConfig, false);
 
         // Create the worker config, adding extra fields that are required for validation of a worker config
         // but that are not used within the embedded engine (since the source records are never serialized) ...
@@ -1073,12 +1134,12 @@ public abstract class AbstractConnectorTest implements Testing {
         final Struct beginKey = (Struct) record.key();
         final Map<String, Object> offset = (Map<String, Object>) record.sourceOffset();
 
-        Assertions.assertThat(begin.getString("status")).isEqualTo("BEGIN");
-        Assertions.assertThat(begin.getInt64("event_count")).isNull();
+        assertThat(begin.getString("status")).isEqualTo("BEGIN");
+        assertThat(begin.getInt64("event_count")).isNull();
         final String txId = begin.getString("id");
-        Assertions.assertThat(beginKey.getString("id")).isEqualTo(txId);
+        assertThat(beginKey.getString("id")).isEqualTo(txId);
 
-        Assertions.assertThat(offset.get("transaction_id")).isEqualTo(txId);
+        assertThat(offset.get("transaction_id")).isEqualTo(txId);
         return txId;
     }
 
@@ -1088,16 +1149,15 @@ public abstract class AbstractConnectorTest implements Testing {
         final Struct endKey = (Struct) record.key();
         final Map<String, Object> offset = (Map<String, Object>) record.sourceOffset();
 
-        Assertions.assertThat(end.getString("status")).isEqualTo("END");
-        Assertions.assertThat(end.getString("id")).isEqualTo(expectedTxId);
-        Assertions.assertThat(end.getInt64("event_count")).isEqualTo(expectedEventCount);
-        Assertions.assertThat(endKey.getString("id")).isEqualTo(expectedTxId);
+        assertThat(end.getString("status")).isEqualTo("END");
+        assertThat(end.getString("id")).isEqualTo(expectedTxId);
+        assertThat(end.getInt64("event_count")).isEqualTo(expectedEventCount);
+        assertThat(endKey.getString("id")).isEqualTo(expectedTxId);
 
-        Assertions
-                .assertThat(end.getArray("data_collections").stream().map(x -> (Struct) x)
-                        .collect(Collectors.toMap(x -> x.getString("data_collection"), x -> x.getInt64("event_count"))))
+        assertThat(end.getArray("data_collections").stream().map(x -> (Struct) x)
+                .collect(Collectors.toMap(x -> x.getString("data_collection"), x -> x.getInt64("event_count"))))
                 .isEqualTo(expectedPerTableCount.entrySet().stream().collect(Collectors.toMap(x -> x.getKey(), x -> x.getValue().longValue())));
-        Assertions.assertThat(offset.get("transaction_id")).isEqualTo(expectedTxId);
+        assertThat(offset.get("transaction_id")).isEqualTo(expectedTxId);
     }
 
     @SuppressWarnings("unchecked")
@@ -1105,10 +1165,10 @@ public abstract class AbstractConnectorTest implements Testing {
         final Struct change = ((Struct) record.value()).getStruct("transaction");
         final Map<String, Object> offset = (Map<String, Object>) record.sourceOffset();
 
-        Assertions.assertThat(change.getString("id")).isEqualTo(expectedTxId);
-        Assertions.assertThat(change.getInt64("total_order")).isEqualTo(expectedTotalOrder);
-        Assertions.assertThat(change.getInt64("data_collection_order")).isEqualTo(expectedCollectionOrder);
-        Assertions.assertThat(offset.get("transaction_id")).isEqualTo(expectedTxId);
+        assertThat(change.getString("id")).isEqualTo(expectedTxId);
+        assertThat(change.getInt64("total_order")).isEqualTo(expectedTotalOrder);
+        assertThat(change.getInt64("data_collection_order")).isEqualTo(expectedCollectionOrder);
+        assertThat(offset.get("transaction_id")).isEqualTo(expectedTxId);
     }
 
     public static int waitTimeForRecords() {
@@ -1120,15 +1180,19 @@ public abstract class AbstractConnectorTest implements Testing {
     }
 
     public static void waitForSnapshotToBeCompleted(String connector, String server) throws InterruptedException {
+        waitForSnapshotEvent(connector, server, "SnapshotCompleted");
+    }
+
+    private static void waitForSnapshotEvent(String connector, String server, String event) throws InterruptedException {
         final MBeanServer mbeanServer = ManagementFactory.getPlatformMBeanServer();
 
         Awaitility.await()
                 .alias("Streaming was not started on time")
                 .pollInterval(100, TimeUnit.MILLISECONDS)
-                .atMost(waitTimeForRecords() * 30, TimeUnit.SECONDS)
+                .atMost(waitTimeForRecords() * 30L, TimeUnit.SECONDS)
                 .ignoreException(InstanceNotFoundException.class)
                 .until(() -> (boolean) mbeanServer
-                        .getAttribute(getSnapshotMetricsObjectName(connector, server), "SnapshotCompleted"));
+                        .getAttribute(getSnapshotMetricsObjectName(connector, server), event));
     }
 
     public static void waitForStreamingRunning(String connector, String server) throws InterruptedException {

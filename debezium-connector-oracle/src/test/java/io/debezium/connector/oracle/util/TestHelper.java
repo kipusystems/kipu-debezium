@@ -17,14 +17,17 @@ import java.util.concurrent.TimeUnit;
 import org.awaitility.Awaitility;
 import org.infinispan.client.hotrod.impl.ConfigurationProperties;
 
+import io.debezium.config.CommonConnectorConfig;
 import io.debezium.config.Configuration;
 import io.debezium.config.Field;
 import io.debezium.connector.oracle.OracleConnection;
 import io.debezium.connector.oracle.OracleConnectorConfig;
+import io.debezium.connector.oracle.OracleConnectorConfig.ConnectorAdapter;
 import io.debezium.connector.oracle.OracleConnectorConfig.LogMiningBufferType;
+import io.debezium.connector.oracle.Scn;
 import io.debezium.connector.oracle.logminer.processor.infinispan.CacheProvider;
 import io.debezium.jdbc.JdbcConfiguration;
-import io.debezium.relational.history.FileDatabaseHistory;
+import io.debezium.storage.file.history.FileSchemaHistory;
 import io.debezium.util.Strings;
 import io.debezium.util.Testing;
 
@@ -34,7 +37,7 @@ public class TestHelper {
     private static final String DATABASE_PREFIX = "database.";
     private static final String DATABASE_ADMIN_PREFIX = "database.admin.";
 
-    public static final Path DB_HISTORY_PATH = Testing.Files.createTestingPath("file-db-history-connect.txt").toAbsolutePath();
+    public static final Path SCHEMA_HISTORY_PATH = Testing.Files.createTestingPath("file-schema-history-connect.txt").toAbsolutePath();
 
     public static final String CONNECTOR_USER = "c##dbzuser";
     public static final String CONNECTOR_NAME = "oracle";
@@ -130,12 +133,17 @@ public class TestHelper {
         jdbcConfiguration.forEach(
                 (field, value) -> builder.with(OracleConnectorConfig.DATABASE_CONFIG_PREFIX + field, value));
 
-        if (adapter().equals(OracleConnectorConfig.ConnectorAdapter.XSTREAM)) {
+        if (adapter().equals(ConnectorAdapter.XSTREAM)) {
             builder.withDefault(OracleConnectorConfig.XSTREAM_SERVER_NAME, "dbzxout");
         }
         else {
             // Tests will always use the online catalog strategy due to speed.
             builder.withDefault(OracleConnectorConfig.LOG_MINING_STRATEGY, "online_catalog");
+
+            final Boolean readOnly = Boolean.parseBoolean(System.getProperty(OracleConnectorConfig.LOG_MINING_READ_ONLY.name()));
+            if (readOnly) {
+                builder.with(OracleConnectorConfig.LOG_MINING_READ_ONLY, readOnly);
+            }
 
             final String bufferTypeName = System.getProperty(OracleConnectorConfig.LOG_MINING_BUFFER_TYPE.name());
             final LogMiningBufferType bufferType = LogMiningBufferType.parse(bufferTypeName);
@@ -155,13 +163,13 @@ public class TestHelper {
         // the test suite will then assume default CDB mode and apply the default PDB name. If
         // the environment wishes to use non-CDB mode, the database.pdb.name setting should be
         // given but without a value.
-        if (!Configuration.fromSystemProperties(DATABASE_PREFIX).asMap().containsKey(PDB_NAME)) {
+        if (isUsingPdb()) {
             builder.withDefault(OracleConnectorConfig.PDB_NAME, DATABASE);
         }
 
-        return builder.with(OracleConnectorConfig.SERVER_NAME, SERVER_NAME)
-                .with(OracleConnectorConfig.DATABASE_HISTORY, FileDatabaseHistory.class)
-                .with(FileDatabaseHistory.FILE_PATH, DB_HISTORY_PATH)
+        return builder.with(CommonConnectorConfig.TOPIC_PREFIX, SERVER_NAME)
+                .with(OracleConnectorConfig.SCHEMA_HISTORY, FileSchemaHistory.class)
+                .with(FileSchemaHistory.FILE_PATH, SCHEMA_HISTORY_PATH)
                 .with(OracleConnectorConfig.INCLUDE_SCHEMA_CHANGES, false);
     }
 
@@ -173,6 +181,24 @@ public class TestHelper {
         Configuration config = defaultConfig().build();
         Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
         return createConnection(config, JdbcConfiguration.adapt(jdbcConfig), true);
+    }
+
+    /**
+     * Obtain a connection using the default configuration.
+     *
+     * Note that the returned connection will automatically switch to the container database root
+     * if {@code switchToRoot} is specified as {@code true}.  If the connection is not configured
+     * to use pluggable databases or pluggable databases are not enabled, the argument has no
+     * effect on the returned connection.
+     */
+    public static OracleConnection defaultConnection(boolean switchToRoot) {
+        Configuration config = defaultConfig().build();
+        Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
+        final OracleConnection connection = createConnection(config, JdbcConfiguration.adapt(jdbcConfig), true);
+        if (switchToRoot && isUsingPdb()) {
+            connection.resetSessionToCdb();
+        }
+        return connection;
     }
 
     /**
@@ -211,7 +237,7 @@ public class TestHelper {
         jdbcConfiguration.forEach(
                 (field, value) -> builder.with(OracleConnectorConfig.DATABASE_CONFIG_PREFIX + field, value));
 
-        builder.with(OracleConnectorConfig.SERVER_NAME, SERVER_NAME);
+        builder.with(CommonConnectorConfig.TOPIC_PREFIX, SERVER_NAME);
         return builder;
     }
 
@@ -225,7 +251,7 @@ public class TestHelper {
         jdbcConfiguration.forEach(
                 (field, value) -> builder.with(OracleConnectorConfig.DATABASE_CONFIG_PREFIX + field, value));
 
-        builder.with(OracleConnectorConfig.SERVER_NAME, SERVER_NAME);
+        builder.with(CommonConnectorConfig.TOPIC_PREFIX, SERVER_NAME);
         return builder;
     }
 
@@ -263,11 +289,33 @@ public class TestHelper {
     /**
      * Return a connection that is suitable for performing test database changes that require
      * an administrator role permission.
+     *
+     * Additionally, the connection returned will be associated to the configured pluggable
+     * database if one is configured otherwise the root database.
      */
     public static OracleConnection adminConnection() {
         Configuration config = adminConfig().build();
         Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
         return createConnection(config, JdbcConfiguration.adapt(jdbcConfig), false);
+    }
+
+    /**
+     * Return a connection that is suitable for performing test database changes that require
+     * an administrator role permission.
+     *
+     * Note that the returned connection will automatically switch to the container database root
+     * if {@code switchToRoot} is specified as {@code true}.  If the connection is not configured
+     * to use pluggable databases or pluggable databases are not enabled, the argument has no
+     * effect on the returned connection.
+     */
+    public static OracleConnection adminConnection(boolean switchToRoot) {
+        Configuration config = adminConfig().build();
+        Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
+        final OracleConnection connection = createConnection(config, JdbcConfiguration.adapt(jdbcConfig), false);
+        if (switchToRoot && isUsingPdb()) {
+            connection.resetSessionToCdb();
+        }
+        return connection;
     }
 
     /**
@@ -279,7 +327,7 @@ public class TestHelper {
      * @return the connection
      */
     private static OracleConnection createConnection(Configuration config, JdbcConfiguration jdbcConfig, boolean autoCommit) {
-        OracleConnection connection = new OracleConnection(jdbcConfig, TestHelper.class::getClassLoader);
+        OracleConnection connection = new OracleConnection(jdbcConfig);
         try {
             connection.setAutoCommit(autoCommit);
 
@@ -299,7 +347,7 @@ public class TestHelper {
         Configuration config = adminConfig().build();
         Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
 
-        try (OracleConnection jdbcConnection = new OracleConnection(JdbcConfiguration.adapt(jdbcConfig), TestHelper.class::getClassLoader)) {
+        try (OracleConnection jdbcConnection = new OracleConnection(JdbcConfiguration.adapt(jdbcConfig))) {
             if ((new OracleConnectorConfig(defaultConfig().build())).getPdbName() != null) {
                 jdbcConnection.resetSessionToCdb();
             }
@@ -314,7 +362,7 @@ public class TestHelper {
         Configuration config = adminConfig().build();
         Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
 
-        try (OracleConnection jdbcConnection = new OracleConnection(JdbcConfiguration.adapt(jdbcConfig), TestHelper.class::getClassLoader)) {
+        try (OracleConnection jdbcConnection = new OracleConnection(JdbcConfiguration.adapt(jdbcConfig))) {
             if ((new OracleConnectorConfig(defaultConfig().build())).getPdbName() != null) {
                 jdbcConnection.resetSessionToCdb();
             }
@@ -402,13 +450,32 @@ public class TestHelper {
      * @throws RuntimeException if the role cannot be granted
      */
     public static void grantRole(String roleName) {
+        grantRole(roleName, null, testJdbcConfig().getString(JdbcConfiguration.USER));
+    }
+
+    /**
+     * Grants the specified roles to the {@link TestHelper#SCHEMA_USER} or the user configured using the
+     * configuration option {@code database.user}, which has precedence, on the specified object.  If
+     * the configuration uses PDB, the grant will be performed int he PDB and not the CDB database.
+     *
+     * @param roleName role to be granted
+     * @param objectName the object to grant the role against
+     * @param userName the user to whom the grant should be applied
+     * @throws RuntimeException if the role cannot be granted
+     */
+    public static void grantRole(String roleName, String objectName, String userName) {
         final String pdbName = defaultConfig().build().getString(OracleConnectorConfig.PDB_NAME);
-        final String userName = testJdbcConfig().getString(JdbcConfiguration.USER);
         try (OracleConnection connection = adminConnection()) {
             if (pdbName != null) {
                 connection.setSessionToPdb(pdbName);
             }
-            connection.execute("GRANT " + roleName + " TO " + userName);
+            final StringBuilder sql = new StringBuilder("GRANT ").append(roleName);
+            if (!Strings.isNullOrEmpty(objectName)) {
+                sql.append(" ON ").append(objectName);
+            }
+            sql.append(" TO ").append(userName);
+            System.out.println(sql.toString());
+            connection.execute(sql.toString());
         }
         catch (SQLException e) {
             throw new RuntimeException("Failed to grant role '" + roleName + "' for user " + userName, e);
@@ -441,9 +508,9 @@ public class TestHelper {
         return 120;
     }
 
-    public static OracleConnectorConfig.ConnectorAdapter adapter() {
+    public static ConnectorAdapter adapter() {
         final String s = System.getProperty(OracleConnectorConfig.CONNECTOR_ADAPTER.name());
-        return (s == null || s.length() == 0) ? OracleConnectorConfig.ConnectorAdapter.LOG_MINER : OracleConnectorConfig.ConnectorAdapter.parse(s);
+        return (s == null || s.length() == 0) ? ConnectorAdapter.LOG_MINER : ConnectorAdapter.parse(s);
     }
 
     /**
@@ -453,12 +520,12 @@ public class TestHelper {
         try (OracleConnection connection = testConnection()) {
             connection.query("SELECT TABLE_NAME FROM USER_TABLES", rs -> {
                 while (rs.next()) {
-                    connection.execute("DROP TABLE " + rs.getString(1));
+                    dropTable(connection, SCHEMA_USER + "." + rs.getString(1));
                 }
             });
         }
         catch (SQLException e) {
-            throw new RuntimeException("Failed to clean database");
+            throw new RuntimeException("Failed to clean database", e);
         }
     }
 
@@ -537,5 +604,44 @@ public class TestHelper {
         url.append(")(PORT=").append(PORT).append("))");
         url.append("(CONNECT_DATA=(SERVER=DEDICATED)(SERVICE_NAME=").append(getDatabaseName()).append(")))");
         return url.toString();
+    }
+
+    /**
+     * Returns whether the connection is using a pluggable database configuration.
+     */
+    public static boolean isUsingPdb() {
+        final Map<String, String> properties = Configuration.fromSystemProperties(DATABASE_PREFIX).asMap();
+        if (properties.containsKey(PDB_NAME)) {
+            // if the property is specified and is not null/empty, we are using PDB mode.
+            return !Strings.isNullOrEmpty(properties.get(PDB_NAME));
+        }
+        // if the property is not specified, we default to using PDB mode.
+        return Strings.isNullOrEmpty(properties.get(PDB_NAME));
+    }
+
+    /**
+     * Returns the connector adapter from the provided configuration.
+     *
+     * @param config the connector configuration, must not be {@code null}
+     * @return the connector adapter being used.
+     */
+    public static ConnectorAdapter getAdapter(Configuration config) {
+        return ConnectorAdapter.parse(config.getString(OracleConnectorConfig.CONNECTOR_ADAPTER));
+    }
+
+    /**
+     * Returns the current system change number in the database.
+     *
+     * @return the current system change number, never {@code null}
+     * @throws SQLException if a database error occurred
+     */
+    public static Scn getCurrentScn() throws SQLException {
+        try (OracleConnection admin = new OracleConnection(adminJdbcConfig(), false)) {
+            // Force the connection to the CDB$ROOT if we're operating w/a PDB
+            if (isUsingPdb()) {
+                admin.resetSessionToCdb();
+            }
+            return admin.getCurrentScn();
+        }
     }
 }

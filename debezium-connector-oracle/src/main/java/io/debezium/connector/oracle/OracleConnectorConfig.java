@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.apache.kafka.common.config.ConfigDef;
@@ -57,14 +58,16 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     protected static final int DEFAULT_PORT = 1528;
     protected static final int DEFAULT_LOG_FILE_QUERY_MAX_RETRIES = 5;
 
-    protected static final int DEFAULT_VIEW_FETCH_SIZE = 10_000;
-
     protected final static int DEFAULT_BATCH_SIZE = 20_000;
     protected final static int MIN_BATCH_SIZE = 1_000;
     protected final static int MAX_BATCH_SIZE = 100_000;
 
     protected final static int DEFAULT_SCN_GAP_SIZE = 1_000_000;
     protected final static int DEFAULT_SCN_GAP_TIME_INTERVAL = 20_000;
+
+    protected final static int DEFAULT_TRANSACTION_EVENTS_THRESHOLD = 0;
+
+    protected final static int DEFAULT_QUERY_FETCH_SIZE = 2_000;
 
     protected final static Duration MAX_SLEEP_TIME = Duration.ofMillis(3_000);
     protected final static Duration DEFAULT_SLEEP_TIME = Duration.ofMillis(1_000);
@@ -104,8 +107,8 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             .withWidth(Width.MEDIUM)
             .withImportance(Importance.LOW)
             .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR, 6))
-            .withDescription("Specify how INTERVAL columns should be represented in change events, including:"
-                    + "'string' represents values as an exact ISO formatted string"
+            .withDescription("Specify how INTERVAL columns should be represented in change events, including: "
+                    + "'string' represents values as an exact ISO formatted string; "
                     + "'numeric' (default) represents values using the inexact conversion into microseconds");
 
     public static final Field SNAPSHOT_MODE = Field.create("snapshot.mode")
@@ -131,15 +134,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
                     + "each table, and this is done using a flashback query that requires no locks. However, in some cases it may be desirable to avoid "
                     + "locks entirely which can be done by specifying 'none'. This mode is only safe to use if no schema changes are happening while the "
                     + "snapshot is taken.");
-
-    public static final Field ORACLE_VERSION = Field.createInternal("database.oracle.version")
-            .withDisplayName("Oracle version, 11 or 12+")
-            .withType(Type.STRING)
-            .withImportance(Importance.LOW)
-            .withDescription("Deprecated: For default Oracle 12+, use default pos_version value v2, for Oracle 11, use pos_version value v1.");
-
-    public static final Field SERVER_NAME = RelationalDatabaseConnectorConfig.SERVER_NAME
-            .withValidation(CommonConnectorConfig::validateServerNameIsDifferentFromHistoryTopicName);
 
     public static final Field CONNECTOR_ADAPTER = Field.create(DATABASE_CONFIG_PREFIX + "connection.adapter")
             .withDisplayName("Connector adapter")
@@ -186,7 +180,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             .withDefault(0)
             .withValidation(Field::isNonNegativeInteger)
             .withGroup(Field.createGroupEntry(Field.Group.CONNECTION_ADVANCED, 18))
-            .withDescription("Hours to keep long running transactions in transaction buffer between log mining sessions.  By default, all transactions are retained.");
+            .withDescription("Hours to keep long running transactions in transaction buffer between log mining sessions. By default, all transactions are retained.");
 
     public static final Field RAC_NODES = Field.create("rac.nodes")
             .withDisplayName("Oracle RAC nodes")
@@ -214,7 +208,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             .withImportance(Importance.LOW)
             .withGroup(Field.createGroupEntry(Field.Group.CONNECTION_ADVANCED, 10))
             .withDefault(0)
-            .withDescription("The number of hours in the past from SYSDATE to mine archive logs.  Using 0 mines all available archive logs");
+            .withDescription("The number of hours in the past from SYSDATE to mine archive logs. Using 0 mines all available archive logs");
 
     public static final Field LOG_MINING_BATCH_SIZE_MIN = Field.create("log.mining.batch.size.min")
             .withDisplayName("Minimum batch size for reading redo/archive logs.")
@@ -243,14 +237,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             .withGroup(Field.createGroupEntry(Field.Group.CONNECTION_ADVANCED, 13))
             .withDefault(MAX_BATCH_SIZE)
             .withDescription("The maximum SCN interval size that this connector will use when reading from redo/archive logs.");
-
-    public static final Field LOG_MINING_VIEW_FETCH_SIZE = Field.create("log.mining.view.fetch.size")
-            .withDisplayName("Number of content records that will be fetched.")
-            .withType(Type.LONG)
-            .withWidth(Width.SHORT)
-            .withImportance(Importance.LOW)
-            .withDefault(DEFAULT_VIEW_FETCH_SIZE)
-            .withDescription("The number of content records that will be fetched from the LogMiner content view.");
 
     public static final Field LOG_MINING_SLEEP_TIME_MIN_MS = Field.create("log.mining.sleep.time.min.ms")
             .withDisplayName("Minimum sleep time in milliseconds when reading redo/archive logs.")
@@ -299,8 +285,8 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             .withImportance(Importance.LOW)
             .withGroup(Field.createGroupEntry(Field.Group.CONNECTION_ADVANCED, 9))
             .withDefault(false)
-            .withDescription("When set to `false`, the default, the connector will mine both archive log and redo logs to emit change events. " +
-                    "When set to `true`, the connector will only mine archive logs. There are circumstances where its advantageous to only " +
+            .withDescription("When set to 'false', the default, the connector will mine both archive log and redo logs to emit change events. " +
+                    "When set to 'true', the connector will only mine archive logs. There are circumstances where its advantageous to only " +
                     "mine archive logs and accept latency in event emission due to frequent revolving redo logs.");
 
     public static final Field LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS = Field.create("log.mining.archive.log.only.scn.poll.interval.ms")
@@ -319,7 +305,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             .withImportance(Importance.LOW)
             .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR_ADVANCED, 21))
             .withDefault(false)
-            .withDescription("When set to `false`, the default, LOB fields will not be captured nor emitted. When set to `true`, the connector " +
+            .withDescription("When set to 'false', the default, LOB fields will not be captured nor emitted. When set to 'true', the connector " +
                     "will capture LOB fields and emit changes for those fields like any other column type.");
 
     public static final Field LOG_MINING_USERNAME_EXCLUDE_LIST = Field.create("log.mining.username.exclude.list")
@@ -353,15 +339,16 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
                     System.lineSeparator() +
                     "infinispan_remote - This option uses a remote Infinispan cluster to buffer transaction data and persist it to disk.");
 
-    @Deprecated
-    public static final Field LOG_MINING_BUFFER_LOCATION = Field.create("log.mining.buffer.location")
-            .withDisplayName("Location where Infinispan stores buffer caches")
-            .withType(Type.STRING)
-            .withWidth(Width.MEDIUM)
+    public static final Field LOG_MINING_BUFFER_TRANSACTION_EVENTS_THRESHOLD = Field.create("log.mining.buffer.transaction.events.threshold")
+            .withDisplayName("The maximum number of events a transaction can have before being discarded.")
+            .withType(Type.LONG)
+            .withWidth(Width.SHORT)
             .withImportance(Importance.LOW)
-            .withGroup(Field.createGroupEntry(Field.Group.CONNECTION_ADVANCED, 22))
-            .withValidation(OracleConnectorConfig::validateBufferLocation)
-            .withDescription("(Deprecated) Path to location where Infinispan will store buffer caches");
+            .withDefault(DEFAULT_TRANSACTION_EVENTS_THRESHOLD)
+            .withValidation(Field::isNonNegativeLong)
+            .withDescription("The number of events a transaction can include before the transaction is discarded. " +
+                    "This is useful for managing buffer memory and/or space when dealing with very large transactions. " +
+                    "Defaults to 0, meaning that no threshold is applied and transactions can have unlimited events.");
 
     public static final Field LOG_MINING_BUFFER_INFINISPAN_CACHE_TRANSACTIONS = Field.create("log.mining.buffer.infinispan.cache.transactions")
             .withDisplayName("Infinispan 'transactions' cache configuration")
@@ -467,30 +454,51 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             .withDescription(
                     "The maximum number of milliseconds that a LogMiner session lives for before being restarted. Defaults to 0 (indefinite until a log switch occurs)");
 
+    public static final Field LOG_MINING_TRANSACTION_SNAPSHOT_BOUNDARY_MODE = Field.createInternal("log.mining.transaction.snapshot.boundary.mode")
+            .withEnum(TransactionSnapshotBoundaryMode.class, TransactionSnapshotBoundaryMode.SKIP)
+            .withWidth(Width.SHORT)
+            .withImportance(Importance.LOW)
+            .withDescription("Specifies how in-progress transactions are to be handled when resolving the snapshot SCN. " + System.lineSeparator() +
+                    "all - Captures in-progress transactions from both V$TRANSACTION and starting a LogMiner session near the snapshot SCN." + System.lineSeparator() +
+                    "transaction_view_only - Captures in-progress transactions based on data in V$TRANSACTION only. " +
+                    "Recently committed transactions near the flashback query SCN won't be included in the snapshot nor streaming." + System.lineSeparator() +
+                    "skip - Skips gathering any in-progress transactions.");
+
+    public static final Field LOG_MINING_READ_ONLY = Field.createInternal("log.mining.read.only")
+            .withDisplayName("Runs the connector in read-only mode")
+            .withType(Type.BOOLEAN)
+            .withWidth(Width.SHORT)
+            .withImportance(Importance.LOW)
+            .withDefault(Boolean.FALSE)
+            .withValidation(OracleConnectorConfig::validateLogMiningReadOnly)
+            .withDescription("When set to 'true', the connector will not attempt to flush the LGWR buffer to disk, allowing connecting to read-only databases.");
+
+    public static final Field QUERY_FETCH_SIZE = CommonConnectorConfig.QUERY_FETCH_SIZE
+            .withDescription(
+                    "The maximum number of records that should be loaded into memory while streaming. A value of '0' uses the default JDBC fetch size, defaults to '2000'.")
+            .withDefault(DEFAULT_QUERY_FETCH_SIZE);
+
     private static final ConfigDefinition CONFIG_DEFINITION = HistorizedRelationalDatabaseConnectorConfig.CONFIG_DEFINITION.edit()
             .name("Oracle")
             .excluding(
-                    SCHEMA_WHITELIST,
                     SCHEMA_INCLUDE_LIST,
-                    SCHEMA_BLACKLIST,
                     SCHEMA_EXCLUDE_LIST,
                     RelationalDatabaseConnectorConfig.TABLE_IGNORE_BUILTIN,
-                    SERVER_NAME)
+                    CommonConnectorConfig.QUERY_FETCH_SIZE)
             .type(
                     HOSTNAME,
                     PORT,
                     USER,
                     PASSWORD,
-                    SERVER_NAME,
                     DATABASE_NAME,
                     PDB_NAME,
                     XSTREAM_SERVER_NAME,
                     SNAPSHOT_MODE,
                     CONNECTOR_ADAPTER,
                     LOG_MINING_STRATEGY,
-                    URL,
-                    ORACLE_VERSION)
+                    URL)
             .connector(
+                    QUERY_FETCH_SIZE,
                     SNAPSHOT_ENHANCEMENT_TOKEN,
                     SNAPSHOT_LOCKING_MODE,
                     RAC_NODES,
@@ -509,12 +517,12 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
                     LOG_MINING_USERNAME_EXCLUDE_LIST,
                     LOG_MINING_ARCHIVE_DESTINATION_NAME,
                     LOG_MINING_BUFFER_TYPE,
-                    LOG_MINING_BUFFER_LOCATION,
                     LOG_MINING_BUFFER_DROP_ON_STOP,
                     LOG_MINING_BUFFER_INFINISPAN_CACHE_TRANSACTIONS,
                     LOG_MINING_BUFFER_INFINISPAN_CACHE_EVENTS,
                     LOG_MINING_BUFFER_INFINISPAN_CACHE_PROCESSED_TRANSACTIONS,
                     LOG_MINING_BUFFER_INFINISPAN_CACHE_SCHEMA_CHANGES,
+                    LOG_MINING_BUFFER_TRANSACTION_EVENTS_THRESHOLD,
                     LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS,
                     LOG_MINING_SCN_GAP_DETECTION_GAP_SIZE_MIN,
                     LOG_MINING_SCN_GAP_DETECTION_TIME_INTERVAL_MAX_MS,
@@ -524,7 +532,9 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
                     LOG_MINING_LOG_QUERY_MAX_RETRIES,
                     LOG_MINING_LOG_BACKOFF_INITIAL_DELAY_MS,
                     LOG_MINING_LOG_BACKOFF_MAX_DELAY_MS,
-                    LOG_MINING_SESSION_MAX_MS)
+                    LOG_MINING_SESSION_MAX_MS,
+                    LOG_MINING_TRANSACTION_SNAPSHOT_BOUNDARY_MODE,
+                    LOG_MINING_READ_ONLY)
             .create();
 
     /**
@@ -548,11 +558,11 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     private final IntervalHandlingMode intervalHandlingMode;
     private final SnapshotMode snapshotMode;
 
-    private final String oracleVersion;
     private ConnectorAdapter connectorAdapter;
     private final StreamingAdapter streamingAdapter;
     private final String snapshotEnhancementToken;
     private final SnapshotLockingMode snapshotLockingMode;
+    private final int queryFetchSize;
 
     // LogMiner options
     private final LogMiningStrategy logMiningStrategy;
@@ -562,7 +572,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     private final int logMiningBatchSizeMin;
     private final int logMiningBatchSizeMax;
     private final int logMiningBatchSizeDefault;
-    private final int logMiningViewFetchSize;
     private final Duration logMiningSleepTimeMin;
     private final Duration logMiningSleepTimeMax;
     private final Duration logMiningSleepTimeDefault;
@@ -574,6 +583,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     private final Set<String> logMiningUsernameExcludes;
     private final String logMiningArchiveDestinationName;
     private final LogMiningBufferType logMiningBufferType;
+    private final long logMiningBufferTransactionEventsThreshold;
     private final boolean logMiningBufferDropOnStop;
     private final int logMiningScnGapDetectionGapSizeMin;
     private final int logMiningScnGapDetectionTimeIntervalMaxMs;
@@ -581,17 +591,23 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     private final Duration logMiningInitialDelay;
     private final Duration logMiningMaxDelay;
     private final Duration logMiningMaximumSession;
+    private final TransactionSnapshotBoundaryMode logMiningTransactionSnapshotBoundaryMode;
+    private final Boolean logMiningReadOnly;
 
     public OracleConnectorConfig(Configuration config) {
-        super(OracleConnector.class, config, config.getString(SERVER_NAME), new SystemTablesPredicate(config),
-                x -> x.schema() + "." + x.table(), true, ColumnFilterMode.SCHEMA, false);
+        super(
+                OracleConnector.class, config,
+                new SystemTablesPredicate(config),
+                x -> x.schema() + "." + x.table(),
+                true,
+                ColumnFilterMode.SCHEMA,
+                false);
 
         this.databaseName = toUpperCase(config.getString(DATABASE_NAME));
         this.pdbName = toUpperCase(config.getString(PDB_NAME));
         this.xoutServerName = config.getString(XSTREAM_SERVER_NAME);
         this.intervalHandlingMode = IntervalHandlingMode.parse(config.getString(INTERVAL_HANDLING_MODE));
         this.snapshotMode = SnapshotMode.parse(config.getString(SNAPSHOT_MODE));
-        this.oracleVersion = config.getString(ORACLE_VERSION);
         this.snapshotEnhancementToken = config.getString(SNAPSHOT_ENHANCEMENT_TOKEN);
         this.connectorAdapter = ConnectorAdapter.parse(config.getString(CONNECTOR_ADAPTER));
         this.snapshotLockingMode = SnapshotLockingMode.parse(config.getString(SNAPSHOT_LOCKING_MODE), SNAPSHOT_LOCKING_MODE.defaultValueAsString());
@@ -602,6 +618,8 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             throw new DebeziumException("Unable to instantiate the connector adapter implementation");
         }
 
+        this.queryFetchSize = config.getInteger(QUERY_FETCH_SIZE);
+
         // LogMiner
         this.logMiningStrategy = LogMiningStrategy.parse(config.getString(LOG_MINING_STRATEGY));
         this.racNodes = resolveRacNodes(config);
@@ -610,7 +628,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         this.logMiningBatchSizeMin = config.getInteger(LOG_MINING_BATCH_SIZE_MIN);
         this.logMiningBatchSizeMax = config.getInteger(LOG_MINING_BATCH_SIZE_MAX);
         this.logMiningBatchSizeDefault = config.getInteger(LOG_MINING_BATCH_SIZE_DEFAULT);
-        this.logMiningViewFetchSize = config.getInteger(LOG_MINING_VIEW_FETCH_SIZE);
         this.logMiningSleepTimeMin = Duration.ofMillis(config.getInteger(LOG_MINING_SLEEP_TIME_MIN_MS));
         this.logMiningSleepTimeMax = Duration.ofMillis(config.getInteger(LOG_MINING_SLEEP_TIME_MAX_MS));
         this.logMiningSleepTimeDefault = Duration.ofMillis(config.getInteger(LOG_MINING_SLEEP_TIME_DEFAULT_MS));
@@ -620,6 +637,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         this.logMiningUsernameExcludes = Strings.setOf(config.getString(LOG_MINING_USERNAME_EXCLUDE_LIST), String::new);
         this.logMiningArchiveDestinationName = config.getString(LOG_MINING_ARCHIVE_DESTINATION_NAME);
         this.logMiningBufferType = LogMiningBufferType.parse(config.getString(LOG_MINING_BUFFER_TYPE));
+        this.logMiningBufferTransactionEventsThreshold = config.getLong(LOG_MINING_BUFFER_TRANSACTION_EVENTS_THRESHOLD);
         this.logMiningBufferDropOnStop = config.getBoolean(LOG_MINING_BUFFER_DROP_ON_STOP);
         this.archiveLogOnlyScnPollTime = Duration.ofMillis(config.getInteger(LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS));
         this.logMiningScnGapDetectionGapSizeMin = config.getInteger(LOG_MINING_SCN_GAP_DETECTION_GAP_SIZE_MIN);
@@ -628,6 +646,8 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         this.logMiningInitialDelay = Duration.ofMillis(config.getLong(LOG_MINING_LOG_BACKOFF_INITIAL_DELAY_MS));
         this.logMiningMaxDelay = Duration.ofMillis(config.getLong(LOG_MINING_LOG_BACKOFF_MAX_DELAY_MS));
         this.logMiningMaximumSession = Duration.ofMillis(config.getLong(LOG_MINING_SESSION_MAX_MS));
+        this.logMiningTransactionSnapshotBoundaryMode = TransactionSnapshotBoundaryMode.parse(config.getString(LOG_MINING_TRANSACTION_SNAPSHOT_BOUNDARY_MODE));
+        this.logMiningReadOnly = config.getBoolean(LOG_MINING_READ_ONLY);
     }
 
     private static String toUpperCase(String property) {
@@ -662,8 +682,9 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         return snapshotLockingMode;
     }
 
-    public String getOracleVersion() {
-        return oracleVersion;
+    @Override
+    public int getQueryFetchSize() {
+        return queryFetchSize;
     }
 
     @Override
@@ -738,6 +759,11 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     public enum SnapshotMode implements EnumeratedValue {
 
         /**
+         * Performs a snapshot of data and schema upon each connector start.
+         */
+        ALWAYS("always", true, true, true),
+
+        /**
          * Perform a snapshot of data and schema upon initial startup of a connector.
          */
         INITIAL("initial", true, true, false),
@@ -754,7 +780,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
 
         /**
          * Perform a snapshot of only the database schemas (without data) and then begin reading the redo log at the current redo log position.
-         * This can be used for recovery only if the connector has existing offsets and the database.history.kafka.topic does not exist (deleted).
+         * This can be used for recovery only if the connector has existing offsets and the schema.history.internal.kafka.topic does not exist (deleted).
          * This recovery option should be used with care as it assumes there have been no schema changes since the connector last stopped,
          * otherwise some events during the gap may be processed with an incorrect schema and corrupted.
          */
@@ -765,7 +791,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         private final boolean shouldStream;
         private final boolean shouldSnapshotOnSchemaError;
 
-        private SnapshotMode(String value, boolean includeData, boolean shouldStream, boolean shouldSnapshotOnSchemaError) {
+        SnapshotMode(String value, boolean includeData, boolean shouldStream, boolean shouldSnapshotOnSchemaError) {
             this.value = value;
             this.includeData = includeData;
             this.shouldStream = shouldStream;
@@ -793,7 +819,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         }
 
         /**
-         * Whether the schema can be recovered if database history is corrupted.
+         * Whether the schema can be recovered if database schema history is corrupted.
          */
         public boolean shouldSnapshotOnSchemaError() {
             return shouldSnapshotOnSchemaError;
@@ -853,7 +879,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
 
         private final String value;
 
-        private SnapshotLockingMode(String value) {
+        SnapshotLockingMode(String value) {
             this.value = value;
         }
 
@@ -901,6 +927,80 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         }
     }
 
+    /**
+     * Controls how in-progress transactions that occur just before and at the snapshot boundary
+     * are to be handled by the connector when transitioning to the streaming phase.
+     */
+    public enum TransactionSnapshotBoundaryMode implements EnumeratedValue {
+        /**
+         * Specifies that the in-progress transaction support at the snapshot boundary should be
+         * skipped and that only transactions committed prior to the snapshot SCN and those that
+         * are started after the snapshot SCN will be captured.
+         */
+        SKIP("skip"),
+
+        /**
+         * Specifies that in-progress transactions that are available in the {@code V$TRANSACTION}
+         * table will be captured and emitted when streaming begins. If a transaction is not in
+         * this view, and its changes were not captured by Oracle Flashback query based on the
+         * snapshot SCN, that transaction will not be captured.
+         */
+        TRANSACTION_VIEW_ONLY("transaction_view_only"),
+
+        /**
+         * Specifies that in-progress transactions identified in the {@code V$TRANSACTION} table as
+         * well as any in-progress transactions as of the current SCN that may have been committed
+         * immediately prior to or at the snapshot SCN will be captured. This is done by starting a
+         * special LogMiner session to gather these transactions prior to starting the snapshot.
+         */
+        ALL("all");
+
+        private final String value;
+
+        TransactionSnapshotBoundaryMode(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String getValue() {
+            return value;
+        }
+
+        /**
+         * Determine if the supplied value is one of the predefined options.
+         *
+         * @param value the configuration property value; may not be {@code null}
+         * @return the matching option, or null if no match is found
+         */
+        public static TransactionSnapshotBoundaryMode parse(String value) {
+            if (value == null) {
+                return null;
+            }
+            value = value.trim();
+            for (TransactionSnapshotBoundaryMode option : TransactionSnapshotBoundaryMode.values()) {
+                if (option.getValue().equalsIgnoreCase(value)) {
+                    return option;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * Determine if the supplied value is one of the predefined options.
+         *
+         * @param value the configuration property value; may not be {@code null}
+         * @param defaultValue the default value; may be {@code null}
+         * @return the matching option, or null if no match is found and the non-null default is invalid
+         */
+        public static TransactionSnapshotBoundaryMode parse(String value, String defaultValue) {
+            TransactionSnapshotBoundaryMode mode = parse(value);
+            if (mode == null && defaultValue != null) {
+                mode = parse(defaultValue);
+            }
+            return mode;
+        }
+    }
+
     public enum ConnectorAdapter implements EnumeratedValue {
 
         /**
@@ -916,7 +1016,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             public StreamingAdapter getInstance(OracleConnectorConfig connectorConfig) {
                 return Instantiator.getInstanceWithProvidedConstructorType(
                         "io.debezium.connector.oracle.xstream.XStreamAdapter",
-                        StreamingAdapter.class::getClassLoader,
                         OracleConnectorConfig.class,
                         connectorConfig);
             }
@@ -935,7 +1034,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             public StreamingAdapter getInstance(OracleConnectorConfig connectorConfig) {
                 return Instantiator.getInstanceWithProvidedConstructorType(
                         "io.debezium.connector.oracle.logminer.LogMinerAdapter",
-                        StreamingAdapter.class::getClassLoader,
                         OracleConnectorConfig.class,
                         connectorConfig);
             }
@@ -1060,25 +1158,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             }
         },
 
-        /**
-         * @deprecated use either {@link #INFINISPAN_EMBEDDED} or {@link #INFINISPAN_REMOTE}.
-         */
-        @Deprecated
-        INFINISPAN("infinispan") {
-            @Override
-            public LogMinerEventProcessor createProcessor(ChangeEventSourceContext context,
-                                                          OracleConnectorConfig connectorConfig,
-                                                          OracleConnection connection,
-                                                          EventDispatcher<OraclePartition, TableId> dispatcher,
-                                                          OraclePartition partition,
-                                                          OracleOffsetContext offsetContext,
-                                                          OracleDatabaseSchema schema,
-                                                          OracleStreamingChangeEventSourceMetrics metrics) {
-                return new EmbeddedInfinispanLogMinerEventProcessor(context, connectorConfig, connection, dispatcher,
-                        partition, offsetContext, schema, metrics);
-            }
-        },
-
         INFINISPAN_EMBEDDED("infinispan_embedded") {
             @Override
             public LogMinerEventProcessor createProcessor(ChangeEventSourceContext context,
@@ -1134,7 +1213,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         }
 
         public boolean isInfinispanEmbedded() {
-            return isInfinispan() && (INFINISPAN.equals(this) || INFINISPAN_EMBEDDED.equals(this));
+            return isInfinispan() && INFINISPAN_EMBEDDED.equals(this);
         }
 
         public static LogMiningBufferType parse(String value) {
@@ -1165,6 +1244,12 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
      */
     private static class SystemTablesPredicate implements TableFilter {
 
+        /**
+         * Pattern that matches temporary analysis tables created by the Compression Advisor subsystem.
+         * These tables will be ignored by the connector.
+         */
+        private final Pattern COMPRESSION_ADVISOR = Pattern.compile("^CMP[3|4]\\$[0-9]+$");
+
         private final Configuration config;
 
         SystemTablesPredicate(Configuration config) {
@@ -1173,7 +1258,7 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
 
         @Override
         public boolean isIncluded(TableId t) {
-            return !isExcludedSchema(t) && !isFlushTable(t);
+            return !isExcludedSchema(t) && !isFlushTable(t) && !isCompressionAdvisorTable(t);
         }
 
         private boolean isExcludedSchema(TableId id) {
@@ -1182,6 +1267,10 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
 
         private boolean isFlushTable(TableId id) {
             return LogWriterFlushStrategy.isFlushTable(id, config.getString(USER));
+        }
+
+        private boolean isCompressionAdvisorTable(TableId id) {
+            return COMPRESSION_ADVISOR.matcher(id.table()).matches();
         }
     }
 
@@ -1250,14 +1339,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
      */
     public int getLogMiningBatchSizeMin() {
         return logMiningBatchSizeMin;
-    }
-
-    /**
-     *
-     * @return int Number of actual records that will be fetched from the log mining contents view
-     */
-    public int getLogMiningViewFetchSize() {
-        return logMiningViewFetchSize;
     }
 
     /**
@@ -1366,6 +1447,13 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     }
 
     /**
+     * @return the event count threshold for when a transaction should be discarded in the buffer.
+     */
+    public long getLogMiningBufferTransactionEventsThreshold() {
+        return logMiningBufferTransactionEventsThreshold;
+    }
+
+    /**
      * @return whether buffer cache should be dropped on connector stop.
      */
     public boolean isLogMiningBufferDropOnStop() {
@@ -1406,6 +1494,20 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
      */
     public Optional<Duration> getLogMiningMaximumSession() {
         return logMiningMaximumSession.toMillis() == 0L ? Optional.empty() : Optional.of(logMiningMaximumSession);
+    }
+
+    /**
+     * @return how in-progress transactions are the snapshot boundary are to be handled.
+     */
+    public TransactionSnapshotBoundaryMode getLogMiningTransactionSnapshotBoundaryMode() {
+        return logMiningTransactionSnapshotBoundaryMode;
+    }
+
+    /**
+     * @return true if log mining should operate in read-only mode.
+     */
+    public boolean isLogMiningReadOnly() {
+        return logMiningReadOnly;
     }
 
     @Override
@@ -1454,19 +1556,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         return 0;
     }
 
-    public static int validateBufferLocation(Configuration config, Field field, ValidationOutput problems) {
-        // Log error if this field is provided in the configuration since its no longer valid and has been removed
-        final LogMiningBufferType bufferType = LogMiningBufferType.parse(config.getString(LOG_MINING_BUFFER_TYPE));
-        if (bufferType.isInfinispan()) {
-            final String location = config.getString(LOG_MINING_BUFFER_LOCATION);
-            if (!Strings.isNullOrEmpty(location)) {
-                problems.accept(field, location, "Configuration option is no longer valid, please use 'log.mining.buffer.infinispan.cache.*' options");
-                return 1;
-            }
-        }
-        return 0;
-    }
-
     public static int validateRacNodes(Configuration config, Field field, ValidationOutput problems) {
         int errors = 0;
         if (ConnectorAdapter.LOG_MINER.equals(ConnectorAdapter.parse(config.getString(CONNECTOR_ADAPTER)))) {
@@ -1489,12 +1578,6 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
 
     private static int validateLogMiningBufferType(Configuration config, Field field, ValidationOutput problems) {
         final LogMiningBufferType bufferType = LogMiningBufferType.parse(config.getString(LOG_MINING_BUFFER_TYPE));
-        if (LogMiningBufferType.INFINISPAN.equals(bufferType)) {
-            LOGGER.warn("Value '{}' of configuration option '{}' is deprecated and should be replaced with '{}'",
-                    LogMiningBufferType.INFINISPAN.getValue(),
-                    LOG_MINING_BUFFER_TYPE.name(),
-                    LogMiningBufferType.INFINISPAN_EMBEDDED.getValue());
-        }
         if (LogMiningBufferType.INFINISPAN_REMOTE.equals(bufferType)) {
             // Must supply the Hotrod server list property as a minimum when using Infinispan cluster mode
             final String serverList = config.getString(RemoteInfinispanLogMinerEventProcessor.HOTROD_SERVER_LIST);
@@ -1515,5 +1598,17 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             errors = Field.isRequired(config, field, problems);
         }
         return errors;
+    }
+
+    public static int validateLogMiningReadOnly(Configuration config, Field field, ValidationOutput problems) {
+        if (config.getBoolean(LOG_MINING_READ_ONLY)) {
+            LOGGER.warn("When using '{}', the LogMiner tablespace requires write access for the Oracle background LogMiner process; however, " +
+                    "the connector itself will not perform any write operations against the database.", LOG_MINING_READ_ONLY.name());
+            final Set<String> racNodes = Strings.setOf(config.getString(RAC_NODES), String::new);
+            if (!racNodes.isEmpty()) {
+                LOGGER.warn("The property '{}' is set, but is ignored due to using read-only mode.", RAC_NODES.name());
+            }
+        }
+        return 0;
     }
 }

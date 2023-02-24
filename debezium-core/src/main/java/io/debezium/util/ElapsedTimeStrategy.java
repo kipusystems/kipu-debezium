@@ -28,7 +28,7 @@ public interface ElapsedTimeStrategy {
      *
      * @return the strategy; never null
      */
-    public static ElapsedTimeStrategy none() {
+    static ElapsedTimeStrategy none() {
         return () -> true;
     }
 
@@ -39,7 +39,7 @@ public interface ElapsedTimeStrategy {
      * @param delayInMilliseconds the time period; must be positive
      * @return the strategy; never null
      */
-    public static ElapsedTimeStrategy constant(Clock clock, long delayInMilliseconds) {
+    static ElapsedTimeStrategy constant(Clock clock, long delayInMilliseconds) {
         if (delayInMilliseconds <= 0) {
             throw new IllegalArgumentException("Initial delay must be positive");
         }
@@ -78,19 +78,21 @@ public interface ElapsedTimeStrategy {
      * period has elapsed.
      *
      * @param clock the clock used to determine if sufficient time has elapsed; may not be null
-     * @param preStepDelayInMilliseconds the time period before the step has occurred; must be positive
+     * @param preStepDelay the time period before the step has occurred; must be positive
      * @param stepFunction the function that determines if the step time has elapsed; may not be null
-     * @param postStepDelayInMilliseconds the time period before the step has occurred; must be positive
+     * @param postStepDelay the time period before the step has occurred; must be positive
      * @return the strategy; never null
      */
-    public static ElapsedTimeStrategy step(Clock clock,
-                                           long preStepDelayInMilliseconds,
-                                           BooleanSupplier stepFunction,
-                                           long postStepDelayInMilliseconds) {
-        if (preStepDelayInMilliseconds <= 0) {
+    static ElapsedTimeStrategy step(Clock clock,
+                                    Duration preStepDelay,
+                                    BooleanSupplier stepFunction,
+                                    Duration postStepDelay) {
+        long preStepDelayinMillis = preStepDelay.toMillis();
+        long postStepDelayinMillis = postStepDelay.toMillis();
+        if (preStepDelayinMillis <= 0) {
             throw new IllegalArgumentException("Pre-step delay must be positive");
         }
-        if (postStepDelayInMilliseconds <= 0) {
+        if (postStepDelayinMillis <= 0) {
             throw new IllegalArgumentException("Post-step delay must be positive");
         }
         return new ElapsedTimeStrategy() {
@@ -103,14 +105,14 @@ public interface ElapsedTimeStrategy {
                 if (nextTimestamp == 0L) {
                     // Initialize ...
                     elapsed = stepFunction.getAsBoolean();
-                    delta = elapsed ? postStepDelayInMilliseconds : preStepDelayInMilliseconds;
+                    delta = elapsed ? postStepDelayinMillis : preStepDelayinMillis;
                     nextTimestamp = clock.currentTimeInMillis() + delta;
                     return true;
                 }
                 if (!elapsed) {
                     elapsed = stepFunction.getAsBoolean();
                     if (elapsed) {
-                        delta = postStepDelayInMilliseconds;
+                        delta = postStepDelayinMillis;
                     }
                 }
                 long current = clock.currentTimeInMillis();
@@ -131,10 +133,11 @@ public interface ElapsedTimeStrategy {
      * Create a strategy whose time periods linearly increase in length.
      *
      * @param clock the clock used to determine if sufficient time has elapsed; may not be null
-     * @param delayInMilliseconds the initial delay; must be positive
+     * @param delay the initial delay; must be positive
      * @return the strategy; never null
      */
-    public static ElapsedTimeStrategy linear(Clock clock, long delayInMilliseconds) {
+    static ElapsedTimeStrategy linear(Clock clock, Duration delay) {
+        long delayInMilliseconds = delay.toMillis();
         if (delayInMilliseconds <= 0) {
             throw new IllegalArgumentException("Initial delay must be positive");
         }
@@ -169,14 +172,14 @@ public interface ElapsedTimeStrategy {
      * Create a strategy whose time periods increase exponentially.
      *
      * @param clock the clock used to determine if sufficient time has elapsed; may not be null
-     * @param initialDelayInMilliseconds the initial delay; must be positive
-     * @param maxDelayInMilliseconds the maximum delay; must be greater than the initial delay
+     * @param initialDelay the initial delay; must be positive
+     * @param maxDelay the maximum delay; must be greater than the initial delay
      * @return the strategy; never null
      */
-    public static ElapsedTimeStrategy exponential(Clock clock,
-                                                  long initialDelayInMilliseconds,
-                                                  long maxDelayInMilliseconds) {
-        return exponential(clock, initialDelayInMilliseconds, maxDelayInMilliseconds, 2.0);
+    static ElapsedTimeStrategy exponential(Clock clock,
+                                           Duration initialDelay,
+                                           Duration maxDelay) {
+        return exponential(clock, initialDelay.toMillis(), maxDelay.toMillis(), 2.0);
     }
 
     /**
@@ -188,10 +191,10 @@ public interface ElapsedTimeStrategy {
      * @param multiplier the factor by which the delay increases each pass
      * @return the strategy
      */
-    public static ElapsedTimeStrategy exponential(Clock clock,
-                                                  long initialDelayInMilliseconds,
-                                                  long maxDelayInMilliseconds,
-                                                  double multiplier) {
+    static ElapsedTimeStrategy exponential(Clock clock,
+                                           long initialDelayInMilliseconds,
+                                           long maxDelayInMilliseconds,
+                                           double multiplier) {
         if (multiplier <= 1.0) {
             throw new IllegalArgumentException("Multiplier must be greater than 1");
         }

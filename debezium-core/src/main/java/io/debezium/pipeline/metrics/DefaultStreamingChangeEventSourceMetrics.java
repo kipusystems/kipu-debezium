@@ -19,7 +19,7 @@ import io.debezium.pipeline.meters.StreamingMeter;
 import io.debezium.pipeline.source.spi.EventMetadataProvider;
 import io.debezium.pipeline.spi.OffsetContext;
 import io.debezium.pipeline.spi.Partition;
-import io.debezium.schema.DataCollectionId;
+import io.debezium.spi.schema.DataCollectionId;
 
 /**
  * The default implementation of metrics related to the streaming phase of a connector.
@@ -40,19 +40,16 @@ public class DefaultStreamingChangeEventSourceMetrics<P extends Partition> exten
         connectionMeter = new ConnectionMeter();
     }
 
+    public <T extends CdcSourceTaskContext> DefaultStreamingChangeEventSourceMetrics(T taskContext, ChangeEventQueueMetrics changeEventQueueMetrics,
+                                                                                     EventMetadataProvider metadataProvider, Map<String, String> tags) {
+        super(taskContext, changeEventQueueMetrics, metadataProvider, tags);
+        streamingMeter = new StreamingMeter(taskContext, metadataProvider);
+        connectionMeter = new ConnectionMeter();
+    }
+
     @Override
     public boolean isConnected() {
         return connectionMeter.isConnected();
-    }
-
-    /**
-     * @deprecated Superseded by the 'Captured Tables' metric. Use {@link #getCapturedTables()}.
-     * Scheduled for removal in a future release.
-     */
-    @Override
-    @Deprecated
-    public String[] getMonitoredTables() {
-        return streamingMeter.getCapturedTables();
     }
 
     @Override

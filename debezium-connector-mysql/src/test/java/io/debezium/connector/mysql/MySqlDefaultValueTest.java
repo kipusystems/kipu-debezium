@@ -5,7 +5,7 @@
  */
 package io.debezium.connector.mysql;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -15,6 +15,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Date;
+import java.util.Properties;
 
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
@@ -33,8 +34,10 @@ import io.debezium.relational.TableSchema;
 import io.debezium.relational.TableSchemaBuilder;
 import io.debezium.relational.Tables;
 import io.debezium.relational.ddl.AbstractDdlParser;
+import io.debezium.schema.DefaultTopicNamingStrategy;
+import io.debezium.schema.FieldNameSelector;
+import io.debezium.schema.SchemaNameAdjuster;
 import io.debezium.time.ZonedTimestamp;
-import io.debezium.util.SchemaNameAdjuster;
 
 /**
  * @author laomei
@@ -57,7 +60,8 @@ public class MySqlDefaultValueTest {
         tableSchemaBuilder = new TableSchemaBuilder(
                 converters,
                 new MySqlDefaultValueConverter(converters),
-                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
+                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(),
+                FieldNameSelector.defaultSelector(SchemaNameAdjuster.NO_OP), false);
 
     }
 
@@ -195,7 +199,8 @@ public class MySqlDefaultValueTest {
         final TableSchemaBuilder tableSchemaBuilder = new TableSchemaBuilder(
                 converters,
                 new MySqlDefaultValueConverter(converters),
-                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
+                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(),
+                FieldNameSelector.defaultSelector(SchemaNameAdjuster.NO_OP), false);
 
         String sql = "CREATE TABLE UNSIGNED_BIGINT_TABLE (\n" +
                 "  A BIGINT UNSIGNED NULL DEFAULT 0,\n" +
@@ -311,7 +316,7 @@ public class MySqlDefaultValueTest {
         assertThat(getColumnSchema(table, "C").defaultValue()).isEqualTo(0);
         assertThat(getColumnSchema(table, "D").defaultValue()).isEqualTo(20L);
         assertThat(getColumnSchema(table, "E").defaultValue()).isEqualTo(null);
-        assertThat(getColumnSchema(table, "F").defaultValue()).isEqualTo(0d);
+        assertThat(getColumnSchema(table, "F").defaultValue()).isEqualTo(0f);
     }
 
     @Test
@@ -352,7 +357,8 @@ public class MySqlDefaultValueTest {
         final TableSchemaBuilder tableSchemaBuilder = new TableSchemaBuilder(
                 converters,
                 new MySqlDefaultValueConverter(converters),
-                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
+                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(),
+                FieldNameSelector.defaultSelector(SchemaNameAdjuster.NO_OP), false);
         String sql = "CREATE TABLE NUMERIC_DECIMAL_TABLE (\n" +
                 "  A NUMERIC NOT NULL DEFAULT 1.23,\n" +
                 "  B DECIMAL(5,3) NOT NULL DEFAULT 2.321,\n" +
@@ -390,11 +396,11 @@ public class MySqlDefaultValueTest {
         assertThat(getColumnSchema(table, "B").defaultValue()).isEqualTo("1970-01-01T00:00:00Z");
         assertThat(getColumnSchema(table, "C").defaultValue()).isEqualTo("1970-01-01T00:00:00Z");
         assertThat(getColumnSchema(table, "D").defaultValue())
-                .isEqualTo(ZonedTimestamp.toIsoString(LocalDateTime.of(2018, 6, 26, 12, 34, 56, 0).atZone(ZoneId.systemDefault()), null));
+                .isEqualTo(ZonedTimestamp.toIsoString(LocalDateTime.of(2018, 6, 26, 12, 34, 56, 0).atZone(ZoneId.systemDefault()), null, null));
         assertThat(getColumnSchema(table, "E").defaultValue())
-                .isEqualTo(ZonedTimestamp.toIsoString(LocalDateTime.of(2018, 6, 26, 12, 34, 56, 0).atZone(ZoneId.systemDefault()), null));
+                .isEqualTo(ZonedTimestamp.toIsoString(LocalDateTime.of(2018, 6, 26, 12, 34, 56, 0).atZone(ZoneId.systemDefault()), null, null));
         assertThat(getColumnSchema(table, "F").defaultValue())
-                .isEqualTo(ZonedTimestamp.toIsoString(LocalDateTime.of(2018, 6, 26, 12, 34, 56, 780_000_000).atZone(ZoneId.systemDefault()), null));
+                .isEqualTo(ZonedTimestamp.toIsoString(LocalDateTime.of(2018, 6, 26, 12, 34, 56, 780_000_000).atZone(ZoneId.systemDefault()), null, null));
         assertThat(getColumnSchema(table, "G").defaultValue()).isEqualTo(Date.from(Instant.ofEpochMilli(0)));
         assertThat(getColumnSchema(table, "H").defaultValue()).isEqualTo((Date.from(Instant.ofEpochMilli(0))));
         assertThat(getColumnSchema(table, "I").defaultValue()).isEqualTo((Date.from(Instant.ofEpochMilli(0))));
@@ -579,12 +585,57 @@ public class MySqlDefaultValueTest {
         assertThat((String) getColumnSchema(table, "data").defaultValue()).isEqualTo(" 3 ");
     }
 
+    @Test
+    @FixFor("DBZ-5134")
+    public void parseNumericAndDecimalToIntDefaultValue() {
+        final AbstractDdlParser parser = new MySqlAntlrDdlParser(converters);
+        final TableSchemaBuilder tableSchemaBuilder = new TableSchemaBuilder(
+                converters,
+                new MySqlDefaultValueConverter(converters),
+                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(),
+                FieldNameSelector.defaultSelector(SchemaNameAdjuster.NO_OP), false);
+        String ddl = "CREATE TABLE `tbl_default` (  \n"
+                + "`id` int(11) NOT NULL AUTO_INCREMENT,\n"
+                + "c0 tinyint not null default '10.01',\n"
+                + "c1 int not null default '5.234',\n"
+                + "c2 bigint not null default '0.000000000000000000',\n"
+                + "c3 bigint not null default .12345,\n"
+                + "c4 smallint not null default 100.52345,\n"
+                + "c5 int not null default '-.789',\n"
+                + "c6 decimal(26,6) default \"1\",\n"
+                + "PRIMARY KEY (`id`)\n"
+                + ")";
+        parser.parse(ddl, tables);
+        Table table = tables.forTable(new TableId(null, null, "tbl_default"));
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+        assertThat(tables.size()).isEqualTo(1);
+
+        TableSchema schema = tableSchemaBuilder.create(defaultTopicNamingStrategy(), table, null, null, null);
+        assertThat(getColumnSchema(schema, "c0").defaultValue()).isEqualTo((short) 10);
+        assertThat(getColumnSchema(schema, "c1").defaultValue()).isEqualTo(5);
+        assertThat(getColumnSchema(schema, "c2").defaultValue()).isEqualTo(0L);
+        assertThat(getColumnSchema(schema, "c3").defaultValue()).isEqualTo(0L);
+        assertThat(getColumnSchema(schema, "c4").defaultValue()).isEqualTo(Short.valueOf("101"));
+        assertThat(getColumnSchema(schema, "c5").defaultValue()).isEqualTo(-1);
+        assertThat(getColumnSchema(schema, "c6").defaultValue()).isEqualTo(1.0);
+    }
+
     private Schema getColumnSchema(Table table, String column) {
         return getColumnSchema(table, column, tableSchemaBuilder);
     }
 
     private Schema getColumnSchema(Table table, String column, TableSchemaBuilder tableSchemaBuilder) {
-        TableSchema schema = tableSchemaBuilder.create("test", "dummy", table, null, null, null);
+        TableSchema schema = tableSchemaBuilder.create(defaultTopicNamingStrategy(), table, null, null, null);
         return schema.getEnvelopeSchema().schema().field("after").schema().field(column).schema();
+    }
+
+    private Schema getColumnSchema(TableSchema tableSchema, String column) {
+        return tableSchema.valueSchema().field(column).schema();
+    }
+
+    private DefaultTopicNamingStrategy defaultTopicNamingStrategy() {
+        Properties properties = new Properties();
+        properties.put("topic.prefix", "test");
+        return new DefaultTopicNamingStrategy(properties);
     }
 }

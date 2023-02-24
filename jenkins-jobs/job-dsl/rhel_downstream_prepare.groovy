@@ -1,5 +1,5 @@
 pipelineJob('rhel-downstream-prepare-job') {
-    displayName('AMQ Streams on RHEL Preparation')
+    displayName('AMQ Streams on RHEL Preparation - Downstream')
     description('Prepares image for AMQ Streams on RHEL')
 
     properties {
@@ -19,6 +19,7 @@ pipelineJob('rhel-downstream-prepare-job') {
         stringParam('RHEL_IMAGE', 'registry.access.redhat.com/ubi8:latest', 'Base RHEL image')
 //        KAFKA CONFIG
         stringParam('KAFKA_URL', '', 'AMQ streams kafka')
+        stringParam('DBZ_SCRIPTS_VERSION', '2.0', 'Version of debezium used as source of startup scripts')
 //        DEBEZIUM CONFIG
         stringParam('DBZ_GIT_REPOSITORY', 'https://github.com/debezium/debezium.git', 'Repository from which Debezium sources are cloned')
         stringParam('DBZ_GIT_BRANCH', 'main', 'A branch/tag of Debezium sources')

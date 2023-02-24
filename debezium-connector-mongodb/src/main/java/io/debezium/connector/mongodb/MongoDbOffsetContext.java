@@ -12,23 +12,21 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.data.Struct;
-import org.bson.Document;
+import org.bson.BsonDocument;
 
 import io.debezium.connector.SnapshotRecord;
+import io.debezium.pipeline.CommonOffsetContext;
 import io.debezium.pipeline.source.snapshot.incremental.IncrementalSnapshotContext;
-import io.debezium.pipeline.spi.OffsetContext;
 import io.debezium.pipeline.txmetadata.TransactionContext;
-import io.debezium.schema.DataCollectionId;
+import io.debezium.spi.schema.DataCollectionId;
 
 /**
  * A context that facilitates the management of the current offsets across a set of mongodb replica sets.
  *
  * @author Chris Cranford
  */
-public class MongoDbOffsetContext implements OffsetContext {
+public class MongoDbOffsetContext extends CommonOffsetContext<SourceInfo> {
 
-    private final SourceInfo sourceInfo;
     private final TransactionContext transactionContext;
     private final Map<ReplicaSet, ReplicaSetPartition> replicaSetPartitions = new ConcurrentHashMap<>();
     private final Map<ReplicaSet, ReplicaSetOffsetContext> replicaSetOffsetContexts = new ConcurrentHashMap<>();
@@ -36,15 +34,15 @@ public class MongoDbOffsetContext implements OffsetContext {
 
     public MongoDbOffsetContext(SourceInfo sourceInfo, TransactionContext transactionContext,
                                 IncrementalSnapshotContext<CollectionId> incrementalSnapshotContext) {
-        this.sourceInfo = sourceInfo;
+        super(sourceInfo);
         this.transactionContext = transactionContext;
         this.incrementalSnapshotContext = incrementalSnapshotContext;
     }
 
     public MongoDbOffsetContext(SourceInfo sourceInfo, TransactionContext transactionContext,
-                                IncrementalSnapshotContext<CollectionId> incrementalSnapshotContext, Map<ReplicaSet, Document> offsets) {
+                                IncrementalSnapshotContext<CollectionId> incrementalSnapshotContext, Map<ReplicaSet, BsonDocument> offsets) {
         this(sourceInfo, transactionContext, incrementalSnapshotContext);
-        offsets.forEach((replicaSet, document) -> sourceInfo.opLogEvent(replicaSet.replicaSetName(), document, document, 0));
+        offsets.forEach((replicaSet, document) -> sourceInfo.initialPosition(replicaSet.replicaSetName(), document));
     }
 
     void startReplicaSetSnapshot(String replicaSetName) {
@@ -67,11 +65,6 @@ public class MongoDbOffsetContext implements OffsetContext {
     }
 
     @Override
-    public Struct getSourceInfo() {
-        return sourceInfo.struct();
-    }
-
-    @Override
     public boolean isSnapshotRunning() {
         return sourceInfo.isSnapshot() && sourceInfo.isSnapshotRunning();
     }
@@ -86,23 +79,8 @@ public class MongoDbOffsetContext implements OffsetContext {
     }
 
     @Override
-    public void postSnapshotCompletion() {
-        sourceInfo.setSnapshot(SnapshotRecord.FALSE);
-    }
-
-    @Override
-    public void markLastSnapshotRecord() {
-        sourceInfo.setSnapshot(SnapshotRecord.LAST);
-    }
-
-    @Override
     public TransactionContext getTransactionContext() {
         return transactionContext;
-    }
-
-    @Override
-    public void incrementalSnapshotEvents() {
-        sourceInfo.setSnapshot(SnapshotRecord.INCREMENTAL);
     }
 
     @Override

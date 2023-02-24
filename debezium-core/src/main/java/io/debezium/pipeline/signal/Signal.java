@@ -25,7 +25,7 @@ import io.debezium.pipeline.source.snapshot.incremental.OpenIncrementalSnapshotW
 import io.debezium.pipeline.spi.OffsetContext;
 import io.debezium.pipeline.spi.Partition;
 import io.debezium.relational.HistorizedRelationalDatabaseConnectorConfig;
-import io.debezium.schema.DataCollectionId;
+import io.debezium.spi.schema.DataCollectionId;
 
 /**
  * The class responsible for processing of signals delivered to Debezium via a dedicated signaling table.
@@ -105,8 +105,11 @@ public class Signal<P extends Partition> {
         }
 
         registerSignalAction(ExecuteSnapshot.NAME, new ExecuteSnapshot<>(eventDispatcher));
+        registerSignalAction(StopSnapshot.NAME, new StopSnapshot<>(eventDispatcher));
         registerSignalAction(OpenIncrementalSnapshotWindow.NAME, new OpenIncrementalSnapshotWindow<>());
         registerSignalAction(CloseIncrementalSnapshotWindow.NAME, new CloseIncrementalSnapshotWindow<>(eventDispatcher));
+        registerSignalAction(PauseIncrementalSnapshot.NAME, new PauseIncrementalSnapshot<>(eventDispatcher));
+        registerSignalAction(ResumeIncrementalSnapshot.NAME, new ResumeIncrementalSnapshot<>(eventDispatcher));
     }
 
     Signal(CommonConnectorConfig connectorConfig) {

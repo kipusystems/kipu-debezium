@@ -69,7 +69,7 @@ import io.debezium.util.Strings;
 public class MySqlValueConverters extends JdbcValueConverters {
 
     @FunctionalInterface
-    public static interface ParsingErrorHandler {
+    public interface ParsingErrorHandler {
         void error(String message, Exception exception);
     }
 
@@ -78,7 +78,7 @@ public class MySqlValueConverters extends JdbcValueConverters {
     /**
      * Used to parse values of TIME columns. Format: 000:00:00.000000.
      */
-    private static final Pattern TIME_FIELD_PATTERN = Pattern.compile("(\\-?[0-9]*):([0-9]*):([0-9]*)(\\.([0-9]*))?");
+    private static final Pattern TIME_FIELD_PATTERN = Pattern.compile("(\\-?[0-9]*):([0-9]*)(:([0-9]*))?(\\.([0-9]*))?");
 
     /**
      * Used to parse values of DATE columns. Format: 000-00-00.
@@ -210,6 +210,12 @@ public class MySqlValueConverters extends JdbcValueConverters {
                     // Source: https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
                     return Decimal.builder(0);
             }
+        }
+        if ((matches(typeName, "FLOAT")
+                || matches(typeName, "FLOAT UNSIGNED")
+                || matches(typeName, "FLOAT UNSIGNED ZEROFILL"))
+                && column.scale().isEmpty() && column.length() <= 24) {
+            return SchemaBuilder.float32();
         }
         // Otherwise, let the base class handle it ...
         return super.schemaBuilder(column);
@@ -380,6 +386,16 @@ public class MySqlValueConverters extends JdbcValueConverters {
     }
 
     @Override
+    protected Object convertSmallInt(Column column, Field fieldDefn, Object data) {
+        // MySQL allows decimal default values for smallint columns
+        if (data instanceof String) {
+            data = Math.round(Double.parseDouble((String) data));
+        }
+
+        return super.convertSmallInt(column, fieldDefn, data);
+    }
+
+    @Override
     protected Object convertInteger(Column column, Field fieldDefn, Object data) {
         // MySQL allows decimal default values for integer columns
         if (data instanceof String) {
@@ -387,6 +403,33 @@ public class MySqlValueConverters extends JdbcValueConverters {
         }
 
         return super.convertInteger(column, fieldDefn, data);
+    }
+
+    @Override
+    protected Object convertBigInt(Column column, Field fieldDefn, Object data) {
+        // MySQL allows decimal default values for bigint columns
+        if (data instanceof String) {
+            data = Math.round(Double.parseDouble((String) data));
+        }
+
+        return super.convertBigInt(column, fieldDefn, data);
+    }
+
+    /**
+     * MySql reports FLOAT(p) values as FLOAT and DOUBLE.
+     * A precision from 0 to 23 results in a 4-byte single-precision FLOAT column.
+     * A precision from 24 to 53 results in an 8-byte double-precision DOUBLE column.
+     * As of MySQL 8.0.17, the nonstandard FLOAT(M,D) and DOUBLE(M,D) syntax is deprecated, and should expect support
+     * for it be removed in a future version of MySQL. Based on this future, we didn't handle the case.
+     */
+    @Override
+    protected Object convertFloat(Column column, Field fieldDefn, Object data) {
+        if (column.scale().isEmpty() && column.length() <= 24) {
+            return super.convertReal(column, fieldDefn, data);
+        }
+        else {
+            return super.convertFloat(column, fieldDefn, data);
+        }
     }
 
     /**
@@ -807,16 +850,21 @@ public class MySqlValueConverters extends JdbcValueConverters {
     public static Duration stringToDuration(String timeString) {
         Matcher matcher = TIME_FIELD_PATTERN.matcher(timeString);
         if (!matcher.matches()) {
-            throw new RuntimeException("Unexpected format for TIME column: " + timeString);
+            throw new DebeziumException("Unexpected format for TIME column: " + timeString);
         }
 
-        long hours = Long.parseLong(matcher.group(1));
-        long minutes = Long.parseLong(matcher.group(2));
-        long seconds = Long.parseLong(matcher.group(3));
+        final long hours = Long.parseLong(matcher.group(1));
+        final long minutes = Long.parseLong(matcher.group(2));
+        final String secondsGroup = matcher.group(4);
+        long seconds = 0;
         long nanoSeconds = 0;
-        String microSecondsString = matcher.group(5);
-        if (microSecondsString != null) {
-            nanoSeconds = Long.parseLong(Strings.justifyLeft(microSecondsString, 9, '0'));
+
+        if (secondsGroup != null) {
+            seconds = Long.parseLong(secondsGroup);
+            String microSecondsString = matcher.group(6);
+            if (microSecondsString != null) {
+                nanoSeconds = Long.parseLong(Strings.justifyLeft(microSecondsString, 9, '0'));
+            }
         }
 
         if (hours >= 0) {

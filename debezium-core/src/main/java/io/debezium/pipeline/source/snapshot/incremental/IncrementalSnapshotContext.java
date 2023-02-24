@@ -13,17 +13,23 @@ import io.debezium.relational.Table;
 
 public interface IncrementalSnapshotContext<T> {
 
-    T currentDataCollectionId();
+    DataCollection<T> currentDataCollectionId();
 
-    T nextDataCollection();
+    DataCollection<T> nextDataCollection();
 
-    List<T> addDataCollectionNamesToSnapshot(List<String> dataCollectionIds);
+    List<DataCollection<T>> addDataCollectionNamesToSnapshot(List<String> dataCollectionIds, Optional<String> additionalCondition);
 
     int dataCollectionsToBeSnapshottedCount();
 
     boolean openWindow(String id);
 
     boolean closeWindow(String id);
+
+    void pauseSnapshot();
+
+    void resumeSnapshot();
+
+    boolean isSnapshotPaused();
 
     boolean isNonInitialChunk();
 
@@ -56,4 +62,8 @@ public interface IncrementalSnapshotContext<T> {
     boolean isSchemaVerificationPassed();
 
     void setSchemaVerificationPassed(boolean schemaVerificationPassed);
+
+    void stopSnapshot();
+
+    boolean removeDataCollectionFromSnapshot(String dataCollectionId);
 }

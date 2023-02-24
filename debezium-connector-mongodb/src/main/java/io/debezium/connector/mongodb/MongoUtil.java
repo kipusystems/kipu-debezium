@@ -9,15 +9,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.bson.BsonDocument;
 import org.bson.Document;
-import org.bson.types.Binary;
+import org.slf4j.Logger;
 
+import com.mongodb.MongoQueryException;
 import com.mongodb.ReadPreference;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoClient;
@@ -27,6 +28,7 @@ import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.MongoIterable;
 import com.mongodb.client.model.changestream.ChangeStreamDocument;
 import com.mongodb.connection.ClusterDescription;
+import com.mongodb.connection.ClusterType;
 import com.mongodb.connection.ServerDescription;
 
 import io.debezium.DebeziumException;
@@ -102,7 +104,7 @@ public class MongoUtil {
     /**
      * Perform the given operation on each of the values in the iterable container.
      *
-     * @param iterable the iterable collection obtained from a MongoDB client; may not be null
+     * @param iterable  the iterable collection obtained from a MongoDB client; may not be null
      * @param operation the operation to perform; may not be null
      */
     public static <T> void forEach(MongoIterable<T> iterable, Consumer<T> operation) {
@@ -227,22 +229,20 @@ public class MongoUtil {
         return null;
     }
 
-    /**
-     * Helper function to extract the session transaction-id from an oplog event.
-     *
-     * @param oplogEvent the oplog event
-     * @return the session transaction id from the oplog event
-     */
-    public static String getOplogSessionTransactionId(Document oplogEvent) {
-        if (!oplogEvent.containsKey("txnNumber")) {
-            return null;
+    public static BsonDocument getOplogEntry(MongoClient client, int sortOrder, Logger logger) throws MongoQueryException {
+        try {
+            MongoCollection<BsonDocument> oplog = client.getDatabase("local").getCollection("oplog.rs", BsonDocument.class);
+            return oplog.find().sort(new Document("$natural", sortOrder)).limit(1).first();
         }
-        final Document lsidDoc = oplogEvent.get("lsid", Document.class);
-        final Object id = lsidDoc.get("id");
-        // MongoDB 4.2 returns Binary instead of UUID
-        final String lsid = (id instanceof Binary) ? UUID.nameUUIDFromBytes(((Binary) id).getData()).toString() : ((UUID) id).toString();
-        final Long txnNumber = oplogEvent.getLong("txnNumber");
-        return lsid + ":" + txnNumber;
+        catch (MongoQueryException e) {
+            if (e.getMessage().contains("$natural:") && e.getMessage().contains("is not supported")) {
+                final String sortOrderType = sortOrder == -1 ? "descending" : "ascending";
+                // Amazon DocumentDB does not support $natural, assume no oplog entries when this occurs
+                logger.info("Natural {} sort is not supported on oplog, treating situation as no oplog entry exists.", sortOrderType);
+                return null;
+            }
+            throw e;
+        }
     }
 
     /**
@@ -251,7 +251,7 @@ public class MongoUtil {
      * @param event the Change Stream event
      * @return the session transaction id from the event
      */
-    public static SourceInfo.SessionTransactionId getChangeStreamSessionTransactionId(ChangeStreamDocument<Document> event) {
+    public static SourceInfo.SessionTransactionId getChangeStreamSessionTransactionId(ChangeStreamDocument<BsonDocument> event) {
         if (event.getLsid() == null || event.getTxnNumber() == null) {
             return null;
         }
@@ -350,37 +350,43 @@ public class MongoUtil {
         return Strings.join(ADDRESS_DELIMITER, addresses);
     }
 
-    protected static ServerAddress getPrimaryAddress(MongoClient client) {
+    protected static ServerAddress getPreferredAddress(MongoClient client, ReadPreference preference) {
+        ClusterDescription clusterDescription = clusterDescription(client);
 
-        ClusterDescription clusterDescription = client.getClusterDescription();
-
-        if (clusterDescription == null || !clusterDescription.hasReadableServer(ReadPreference.primaryPreferred())) {
-            client.listDatabaseNames().first(); // force connection attempt and make async client wait/block
-            clusterDescription = client.getClusterDescription();
-        }
-
-        if (clusterDescription == null) {
-            throw new DebeziumException("Unable to read cluster description from MongoDB connection.");
-        }
-        else if (!clusterDescription.hasReadableServer(ReadPreference.primaryPreferred())) {
+        if (!clusterDescription.hasReadableServer(preference)) {
             throw new DebeziumException("Unable to use cluster description from MongoDB connection: " + clusterDescription);
         }
 
-        List<ServerDescription> serverDescriptions = clusterDescription.getServerDescriptions();
+        List<ServerDescription> serverDescriptions = preference.choose(clusterDescription);
 
-        if (serverDescriptions == null || serverDescriptions.size() == 0) {
+        if (serverDescriptions.size() == 0) {
             throw new DebeziumException("Unable to read server descriptions from MongoDB connection (Null or empty list).");
         }
 
-        Optional<ServerDescription> primaryDescription = serverDescriptions.stream().filter(ServerDescription::isPrimary).findFirst();
+        Optional<ServerDescription> preferredDescription = serverDescriptions.stream().findFirst();
 
-        if (!primaryDescription.isPresent()) {
-            throw new DebeziumException("Unable to find primary from MongoDB connection, got '" + serverDescriptions + "'");
+        return preferredDescription
+                .map(ServerDescription::getAddress)
+                .map(address -> new ServerAddress(address.getHost(), address.getPort()))
+                .orElseThrow(() -> new DebeziumException("Unable to find primary from MongoDB connection, got '" + serverDescriptions + "'"));
+    }
+
+    /**
+     * Retrieves cluster description, forcing a connection if not yet available
+     *
+     * @param client cluster connection client
+     * @return cluster description
+     */
+    public static ClusterDescription clusterDescription(MongoClient client) {
+        ClusterDescription description = client.getClusterDescription();
+
+        if (description.getType() == ClusterType.UNKNOWN) {
+            // force the connection and try again
+            client.listDatabaseNames().first(); // force the connection
+            description = client.getClusterDescription();
         }
 
-        ServerAddress primaryAddress = primaryDescription.get().getAddress();
-
-        return new ServerAddress(primaryAddress.getHost(), primaryAddress.getPort());
+        return description;
     }
 
     private MongoUtil() {

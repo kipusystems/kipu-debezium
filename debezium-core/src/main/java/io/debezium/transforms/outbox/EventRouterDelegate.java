@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.connect.connector.ConnectRecord;
@@ -37,6 +38,7 @@ import io.debezium.time.NanoTimestamp;
 import io.debezium.time.Timestamp;
 import io.debezium.transforms.SmtManager;
 import io.debezium.transforms.tracing.ActivateTracingSpan;
+import io.debezium.util.BoundedConcurrentHashMap;
 
 /**
  * A delegate class having common logic between Outbox Event Routers for SQL DBs and MongoDB
@@ -46,7 +48,7 @@ import io.debezium.transforms.tracing.ActivateTracingSpan;
 public class EventRouterDelegate<R extends ConnectRecord<R>> {
 
     @FunctionalInterface
-    public static interface RecordConverter<R> {
+    public interface RecordConverter<R> {
         R convert(R record);
     }
 
@@ -67,12 +69,15 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
 
     private List<EventRouterConfigDefinition.AdditionalField> additionalFields;
 
-    private Schema defaultValueSchema;
     private final Map<Integer, Schema> versionedValueSchema = new HashMap<>();
+    private BoundedConcurrentHashMap<Schema, Schema> payloadSchemaCache;
 
     private boolean onlyHeadersInOutputMessage = false;
 
+    private EventRouterConfigDefinition.JsonPayloadNullFieldBehavior jsonPayloadNullFieldBehavior;
     private boolean expandJsonPayload;
+    private JsonSchemaData jsonSchemaData;
+
     private ObjectMapper objectMapper;
 
     private SmtManager<R> smtManager;
@@ -123,7 +128,6 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
         final String fieldEventId = configProvider.getFieldEventId();
         final String fieldEventKey = configProvider.getFieldEventKey();
         final String fieldPayload = configProvider.getFieldPayload();
-        final String fieldPayloadId = configProvider.getFieldPayloadId();
         final String fieldEventTimestamp = configProvider.getFieldEventTimestamp();
         final String routeByField = configProvider.getRouteByField();
 
@@ -136,8 +140,6 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
         Long timestamp = getEventTimestampMs(fieldEventTimestamp, debeziumEventValue, eventStruct);
         Object eventId = eventStruct.get(fieldEventId);
         Object payload = eventStruct.get(fieldPayload);
-        final Field fallbackPayloadIdField = eventValueSchema.field(fieldPayloadId);
-        Object payloadId = fallbackPayloadIdField != null ? eventStruct.get(fieldPayloadId) : null;
 
         final Field eventIdField = eventValueSchema.field(fieldEventId);
         if (eventIdField == null) {
@@ -159,8 +161,8 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
                     // Parse and get Jackson JsonNode.
                     final JsonNode jsonPayload = parseJsonPayload(payloadString);
                     // Build a new Schema and new payload Struct that replace existing ones.
-                    payloadSchema = SchemaBuilderUtil.jsonNodeToSchema(jsonPayload);
-                    payload = StructBuilderUtil.jsonNodeToStruct(jsonPayload, payloadSchema);
+                    payloadSchema = jsonSchemaData.toConnectSchema(fieldPayload, jsonPayload);
+                    payload = jsonSchemaData.toConnectData(jsonPayload, payloadSchema);
                 }
                 catch (Exception e) {
                     LOGGER.warn("JSON expansion failed", e);
@@ -175,6 +177,8 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
 
         final Struct structValue = onlyHeadersInOutputMessage ? null : new Struct(structValueSchema).put(ENVELOPE_PAYLOAD, payload);
 
+        AtomicReference<Integer> partition = new AtomicReference<>();
+
         additionalFields.forEach((additionalField -> {
             switch (additionalField.getPlacement()) {
                 case ENVELOPE:
@@ -188,6 +192,8 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
                             eventStruct.get(additionalField.getField()),
                             eventValueSchema.field(additionalField.getField()).schema());
                     break;
+                case PARTITION:
+                    partition.set(eventStruct.getInt32(additionalField.getField()));
             }
         }));
 
@@ -209,12 +215,12 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
             updatedSchema = structValueSchema;
         }
 
-        Object recordKey = defineRecordKey(fieldEventKey, eventStruct, payloadId);
+        Object recordKey = defineRecordKey(fieldEventKey, eventStruct);
 
         R newRecord = r.newRecord(
                 eventStruct.getString(routeByField),
-                null,
-                defineRecordKeySchema(fieldEventKey, eventValueSchema, fallbackPayloadIdField),
+                partition.get(),
+                defineRecordKeySchema(fieldEventKey, eventValueSchema),
                 recordKey,
                 updatedSchema,
                 updatedValue,
@@ -264,7 +270,7 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
         }
     }
 
-    private Schema defineRecordKeySchema(String fieldEventKey, Schema eventStruct, Field fallbackKeyField) {
+    private Schema defineRecordKeySchema(String fieldEventKey, Schema eventStruct) {
         Field eventKeySchema = null;
         if (fieldEventKey != null) {
             eventKeySchema = eventStruct.field(fieldEventKey);
@@ -274,16 +280,11 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
             return eventKeySchema.schema();
         }
 
-        return (fallbackKeyField != null) ? fallbackKeyField.schema() : Schema.STRING_SCHEMA;
+        return Schema.STRING_SCHEMA;
     }
 
-    private Object defineRecordKey(String fieldEventKey, Struct eventStruct, Object fallbackKey) {
-        Object eventKey = null;
-        if (fieldEventKey != null) {
-            eventKey = eventStruct.get(fieldEventKey);
-        }
-
-        return (eventKey != null) ? eventKey : fallbackKey;
+    private Object defineRecordKey(String fieldEventKey, Struct eventStruct) {
+        return (fieldEventKey != null) ? eventStruct.get(fieldEventKey) : null;
     }
 
     private void handleUnexpectedOperation(R r) {
@@ -330,12 +331,14 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
         smtManager.validate(config, allFields);
 
         invalidOperationBehavior = EventRouterConfigDefinition.InvalidOperationBehavior.parse(
-                config.getFallbackStringPropertyWithWarning(EventRouterConfigDefinition.OPERATION_INVALID_BEHAVIOR,
-                        EventRouterConfigDefinition.DEBEZIUM_OPERATION_INVALID_BEHAVIOR));
+                config.getString(EventRouterConfigDefinition.OPERATION_INVALID_BEHAVIOR));
 
+        jsonPayloadNullFieldBehavior = EventRouterConfigDefinition.JsonPayloadNullFieldBehavior.parse(
+                config.getString(EventRouterConfigDefinition.TABLE_JSON_PAYLOAD_NULL_BEHAVIOR));
         expandJsonPayload = config.getBoolean(EventRouterConfigDefinition.EXPAND_JSON_PAYLOAD);
         if (expandJsonPayload) {
             objectMapper = new ObjectMapper();
+            jsonSchemaData = new JsonSchemaData(jsonPayloadNullFieldBehavior);
         }
 
         // Configure the default configuration provider
@@ -363,14 +366,18 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
 
         additionalFields = parseAdditionalFieldsConfig(config);
         onlyHeadersInOutputMessage = !additionalFields.stream().anyMatch(field -> field.getPlacement() == EventRouterConfigDefinition.AdditionalFieldPlacement.ENVELOPE);
+
+        payloadSchemaCache = new BoundedConcurrentHashMap(10000, 10, BoundedConcurrentHashMap.Eviction.LRU);
     }
 
     private Schema getValueSchema(Schema payloadSchema, Schema debeziumEventSchema, String routedTopic) {
-        if (defaultValueSchema == null) {
-            defaultValueSchema = getSchemaBuilder(payloadSchema, debeziumEventSchema, routedTopic).build();
+        Schema valueSchema = payloadSchemaCache.get(payloadSchema);
+        if (valueSchema == null) {
+            valueSchema = getSchemaBuilder(payloadSchema, debeziumEventSchema, routedTopic).build();
+            payloadSchemaCache.put(payloadSchema, valueSchema);
         }
 
-        return defaultValueSchema;
+        return valueSchema;
     }
 
     private Schema getValueSchema(Schema payloadSchema, Schema debeziumEventSchema, Integer version, String routedTopic) {
@@ -441,7 +448,6 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
         private String fieldEventKey;
         private String fieldEventTimestamp;
         private String fieldPayload;
-        private String fieldPayloadId;
         private String routeByField;
 
         @Override
@@ -456,7 +462,6 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
             this.fieldEventKey = config.getString(EventRouterConfigDefinition.FIELD_EVENT_KEY);
             this.fieldEventTimestamp = config.getString(EventRouterConfigDefinition.FIELD_EVENT_TIMESTAMP);
             this.fieldPayload = config.getString(EventRouterConfigDefinition.FIELD_PAYLOAD);
-            this.fieldPayloadId = config.getString(EventRouterConfigDefinition.FIELD_PAYLOAD_ID);
             this.routeByField = config.getString(EventRouterConfigDefinition.ROUTE_BY_FIELD);
         }
 
@@ -478,11 +483,6 @@ public class EventRouterDelegate<R extends ConnectRecord<R>> {
         @Override
         public String getFieldPayload() {
             return fieldPayload;
-        }
-
-        @Override
-        public String getFieldPayloadId() {
-            return fieldPayloadId;
         }
 
         @Override

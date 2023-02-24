@@ -90,8 +90,8 @@ public class ColumnDefinitionParserListener extends MySqlParserBaseListener {
             tableEditor.addColumn(columnEditor.create());
             tableEditor.setPrimaryKeyNames(columnEditor.name());
         }
-        defaultValueListener.exitDefaultValue(false);
         parser.runIfNotNull(() -> {
+            defaultValueListener.exitDefaultValue(false);
             listeners.remove(defaultValueListener);
         }, tableEditor);
         super.exitColumnDefinition(ctx);
@@ -227,7 +227,7 @@ public class ColumnDefinitionParserListener extends MySqlParserBaseListener {
                 charsetName = collectionDataTypeContext.charsetName().getText();
             }
 
-            if (dataType.name().toUpperCase().equals("SET")) {
+            if (dataType.name().equalsIgnoreCase("SET")) {
                 // After DBZ-132, it will always be comma separated
                 int optionsSize = collectionDataTypeContext.collectionOptions().collectionOption().size();
                 columnEditor.length(Math.max(0, optionsSize * 2 - 1)); // number of options + number of commas

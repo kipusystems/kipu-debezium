@@ -5,9 +5,7 @@
  */
 package io.debezium.connector.mongodb.transforms.UpdateOperators;
 
-import static org.fest.assertions.Assertions.assertThat;
-
-import java.util.function.Consumer;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
@@ -16,10 +14,8 @@ import org.bson.Document;
 import org.bson.conversions.Bson;
 import org.junit.Test;
 
-import com.mongodb.client.MongoClient;
 import com.mongodb.client.model.UpdateOptions;
 
-import io.debezium.connector.mongodb.TestHelper;
 import io.debezium.connector.mongodb.transforms.ExtractNewDocumentState;
 import io.debezium.data.VerifyRecord;
 
@@ -49,15 +45,9 @@ public class ExtractNewDocumentStateUpdateFieldOperatorTestIT extends AbstractEx
         VerifyRecord.assertConnectSchemasAreEqual("dataInt", valueSchema.field("dataInt").schema(), Schema.OPTIONAL_INT32_SCHEMA);
         assertThat(transformedUpdateValue.get("_id")).isEqualTo(1);
         assertThat(transformedUpdateValue.get("dataInt")).isEqualTo(246);
-        if (TestHelper.isOplogCaptureMode()) {
-            VerifyRecord.assertConnectSchemasAreEqual("nested.dataInt", valueSchema.field("nested.dataInt").schema(), Schema.OPTIONAL_INT32_SCHEMA);
-            assertThat(transformedUpdateValue.get("nested.dataInt")).isEqualTo(100);
-        }
-        else {
-            VerifyRecord.assertConnectSchemasAreEqual("nested.dataInt",
-                    valueSchema.field("nested").schema().field("dataInt").schema(), Schema.OPTIONAL_INT32_SCHEMA);
-            assertThat(transformedUpdateValue.getStruct("nested").get("dataInt")).isEqualTo(100);
-        }
+        VerifyRecord.assertConnectSchemasAreEqual("nested.dataInt",
+                valueSchema.field("nested").schema().field("dataInt").schema(), Schema.OPTIONAL_INT32_SCHEMA);
+        assertThat(transformedUpdateValue.getStruct("nested").get("dataInt")).isEqualTo(100);
     }
 
     /**
@@ -76,13 +66,7 @@ public class ExtractNewDocumentStateUpdateFieldOperatorTestIT extends AbstractEx
         VerifyRecord.assertConnectSchemasAreEqual("dataInt", valueSchema.field("dataInt").schema(), Schema.OPTIONAL_INT32_SCHEMA);
         assertThat(transformedUpdateValue.get("_id")).isEqualTo(1);
         assertThat(transformedUpdateValue.get("dataInt")).isEqualTo(122);
-        if (TestHelper.isOplogCaptureMode()) {
-            // Since 124 > 123 we should expect "nested.dataInt" to not be present
-            assertThat(valueSchema.field("nested.dataInt")).isNull();
-        }
-        else {
-            assertThat(transformedUpdateValue.getStruct("nested").get("dataInt")).isEqualTo(123);
-        }
+        assertThat(transformedUpdateValue.getStruct("nested").get("dataInt")).isEqualTo(123);
     }
 
     /**
@@ -99,16 +83,8 @@ public class ExtractNewDocumentStateUpdateFieldOperatorTestIT extends AbstractEx
 
         VerifyRecord.assertConnectSchemasAreEqual("_id", valueSchema.field("_id").schema(), Schema.OPTIONAL_INT32_SCHEMA);
         assertThat(transformedUpdateValue.get("_id")).isEqualTo(1);
-        if (TestHelper.isOplogCaptureMode()) {
-            // Since 122 < 123 we should expect "dataInt" to not be present
-            assertThat(valueSchema.field("dataInt")).isNull();
-            VerifyRecord.assertConnectSchemasAreEqual("nested.dataInt", valueSchema.field("nested.dataInt").schema(), Schema.OPTIONAL_INT32_SCHEMA);
-            assertThat(transformedUpdateValue.get("nested.dataInt")).isEqualTo(124);
-        }
-        else {
-            assertThat(transformedUpdateValue.get("dataInt")).isEqualTo(123);
-            assertThat(transformedUpdateValue.getStruct("nested").get("dataInt")).isEqualTo(124);
-        }
+        assertThat(transformedUpdateValue.get("dataInt")).isEqualTo(123);
+        assertThat(transformedUpdateValue.getStruct("nested").get("dataInt")).isEqualTo(124);
     }
 
     /**
@@ -129,15 +105,9 @@ public class ExtractNewDocumentStateUpdateFieldOperatorTestIT extends AbstractEx
         assertThat(transformedUpdateValue.get("_id")).isEqualTo(1);
         assertThat(transformedUpdateValue.get("dataInt")).isEqualTo(369);
         assertThat(transformedUpdateValue.get("nonExistentField")).isEqualTo(0);
-        if (TestHelper.isOplogCaptureMode()) {
-            VerifyRecord.assertConnectSchemasAreEqual("nested.dataInt", valueSchema.field("nested.dataInt").schema(), Schema.OPTIONAL_INT32_SCHEMA);
-            assertThat(transformedUpdateValue.get("nested.dataInt")).isEqualTo(246);
-        }
-        else {
-            VerifyRecord.assertConnectSchemasAreEqual("nested.dataInt",
-                    valueSchema.field("nested").schema().field("dataInt").schema(), Schema.OPTIONAL_INT32_SCHEMA);
-            assertThat(transformedUpdateValue.getStruct("nested").get("dataInt")).isEqualTo(246);
-        }
+        VerifyRecord.assertConnectSchemasAreEqual("nested.dataInt",
+                valueSchema.field("nested").schema().field("dataInt").schema(), Schema.OPTIONAL_INT32_SCHEMA);
+        assertThat(transformedUpdateValue.getStruct("nested").get("dataInt")).isEqualTo(246);
     }
 
     /**
@@ -157,14 +127,7 @@ public class ExtractNewDocumentStateUpdateFieldOperatorTestIT extends AbstractEx
         assertThat(transformedUpdateValue.get("_id")).isEqualTo(1);
         assertThat(transformedUpdateValue.get("dataIntNewName")).isEqualTo(123);
 
-        if (TestHelper.isOplogCaptureMode()) {
-            // Ensure the rename causes the old field value to be set to null
-            VerifyRecord.assertConnectSchemasAreEqual("dataInt", valueSchema.field("dataInt").schema(), Schema.OPTIONAL_STRING_SCHEMA);
-            assertThat(transformedUpdateValue.get("dataInt")).isNull();
-        }
-        else {
-            assertThat(valueSchema.field("dataInt")).isNull();
-        }
+        assertThat(valueSchema.field("dataInt")).isNull();
     }
 
     /**
@@ -198,10 +161,11 @@ public class ExtractNewDocumentStateUpdateFieldOperatorTestIT extends AbstractEx
         Bson setOnInsert = Document.parse("{'$setOnInsert': {'onlySetIfInsertDataInt': 789}}");
         UpdateOptions updateOptions = new UpdateOptions();
         updateOptions.upsert(true);
-        Consumer<MongoClient> upsert = client -> client.getDatabase(DB_NAME).getCollection(this.getCollectionName())
-                .updateOne(Document.parse("{'_id' : 2}"), setOnInsert, updateOptions);
 
-        primary().execute("update", upsert);
+        try (var client = connect()) {
+            client.getDatabase(DB_NAME).getCollection(this.getCollectionName())
+                    .updateOne(Document.parse("{'_id' : 2}"), setOnInsert, updateOptions);
+        }
 
         SourceRecord upsertRecord = consumeRecordsByTopic(1).recordsForTopic(this.topicName()).get(0);
 
@@ -216,9 +180,11 @@ public class ExtractNewDocumentStateUpdateFieldOperatorTestIT extends AbstractEx
 
         // Execute a new Upsert with the same ID to ensure the field "onlySetIfInsertDataInt" doesn't change its value
         Bson setOnInsertAndSet = Document.parse("{'$setOnInsert': {'onlySetIfInsertDataInt': 123}, '$set': {'newField': 456}}");
-        Consumer<MongoClient> upsertAndUpdate = client -> client.getDatabase(DB_NAME).getCollection(this.getCollectionName())
-                .updateOne(Document.parse("{'_id' : 2}"), setOnInsertAndSet, updateOptions);
-        primary().execute("update", upsertAndUpdate);
+
+        try (var client = connect()) {
+            client.getDatabase(DB_NAME).getCollection(this.getCollectionName())
+                    .updateOne(Document.parse("{'_id' : 2}"), setOnInsertAndSet, updateOptions);
+        }
 
         SourceRecord updateRecord = getUpdateRecord();
         final SourceRecord transformedUpdate = transformation.apply(updateRecord);
@@ -229,13 +195,7 @@ public class ExtractNewDocumentStateUpdateFieldOperatorTestIT extends AbstractEx
         VerifyRecord.assertConnectSchemasAreEqual("newField", updateValueSchema.field("newField").schema(), Schema.OPTIONAL_INT32_SCHEMA);
         assertThat(transformedUpdateValue.get("_id")).isEqualTo(2);
         assertThat(transformedUpdateValue.get("newField")).isEqualTo(456);
-        if (TestHelper.isOplogCaptureMode()) {
-            // Ensure on the second update the field is not set
-            assertThat(updateValueSchema.field("onlySetIfInsertDataInt")).isNull();
-        }
-        else {
-            assertThat(transformedUpdateValue.get("onlySetIfInsertDataInt")).isEqualTo(789);
-        }
+        assertThat(transformedUpdateValue.get("onlySetIfInsertDataInt")).isEqualTo(789);
     }
 
     /**
@@ -255,14 +215,7 @@ public class ExtractNewDocumentStateUpdateFieldOperatorTestIT extends AbstractEx
         VerifyRecord.assertConnectSchemasAreEqual("_id", valueSchema.field("_id").schema(), Schema.OPTIONAL_INT32_SCHEMA);
         assertThat(transformedUpdateValue.get("_id")).isEqualTo(1);
 
-        if (TestHelper.isOplogCaptureMode()) {
-            // Unset fields come as null value
-            VerifyRecord.assertConnectSchemasAreEqual("dataStr", valueSchema.field("dataStr").schema(), Schema.OPTIONAL_STRING_SCHEMA);
-            assertThat(transformedUpdateValue.get("dataStr")).isNull();
-        }
-        else {
-            assertThat(valueSchema.field("dataStr")).isNull();
-        }
+        assertThat(valueSchema.field("dataStr")).isNull();
         // Since the field "nonExistentField" doesn't exist ensure it's not present in the schema
         assertThat(valueSchema.field("nonExistentField")).isNull();
     }

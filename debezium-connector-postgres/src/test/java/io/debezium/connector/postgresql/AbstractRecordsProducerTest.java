@@ -7,7 +7,7 @@
 package io.debezium.connector.postgresql;
 
 import static io.debezium.connector.postgresql.TestHelper.PK_FIELD;
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -420,12 +420,20 @@ public abstract class AbstractRecordsProducerTest extends AbstractConnectorTest 
         return Arrays.asList(new SchemaAndValueField("ba", Schema.OPTIONAL_STRING_SCHEMA, "AQID"));
     }
 
+    protected List<SchemaAndValueField> schemaAndValueForByteaBase64UrlSafe() {
+        return Arrays.asList(new SchemaAndValueField("ba", Schema.OPTIONAL_STRING_SCHEMA, "AQID"));
+    }
+
     protected List<SchemaAndValueField> schemaAndValueForUnknownColumnBytes() {
         return Arrays.asList(new SchemaAndValueField("ccircle", Schema.OPTIONAL_BYTES_SCHEMA, ByteBuffer.wrap("<(10.0,20.0),10.0>".getBytes(StandardCharsets.UTF_8))));
     }
 
     protected List<SchemaAndValueField> schemaAndValueForUnknownColumnBase64() {
         return Arrays.asList(new SchemaAndValueField("ccircle", Schema.OPTIONAL_STRING_SCHEMA, "PCgxMC4wLDIwLjApLDEwLjA+"));
+    }
+
+    protected List<SchemaAndValueField> schemaAndValueForUnknownColumnBase64UrlSafe() {
+        return Arrays.asList(new SchemaAndValueField("ccircle", Schema.OPTIONAL_STRING_SCHEMA, "PCgxMC4wLDIwLjApLDEwLjA-"));
     }
 
     protected List<SchemaAndValueField> schemaAndValueForUnknownColumnHex() {
@@ -1045,7 +1053,27 @@ public abstract class AbstractRecordsProducerTest extends AbstractConnectorTest 
         }
     }
 
-    protected void assertRecordOffsetAndSnapshotSource(SourceRecord record, boolean shouldBeSnapshot, boolean shouldBeLastSnapshotRecord) {
+    protected SnapshotRecord expectedSnapshotRecordFromPosition(int totalPosition, int totalCount, int topicPosition, int topicCount) {
+        if (totalPosition == totalCount) {
+            return SnapshotRecord.LAST;
+        }
+
+        if (totalPosition == 1) {
+            return SnapshotRecord.FIRST;
+        }
+
+        if (topicPosition == topicCount) {
+            return SnapshotRecord.LAST_IN_DATA_COLLECTION;
+        }
+
+        if (topicPosition == 1) {
+            return SnapshotRecord.FIRST_IN_DATA_COLLECTION;
+        }
+
+        return SnapshotRecord.TRUE;
+    }
+
+    protected void assertRecordOffsetAndSnapshotSource(SourceRecord record, SnapshotRecord expectedType) {
         Map<String, ?> offset = record.sourceOffset();
         assertNotNull(offset.get(SourceInfo.TXID_KEY));
         assertNotNull(offset.get(SourceInfo.TIMESTAMP_USEC_KEY));
@@ -1054,9 +1082,8 @@ public abstract class AbstractRecordsProducerTest extends AbstractConnectorTest 
 
         Object lastSnapshotRecord = offset.get(SourceInfo.LAST_SNAPSHOT_RECORD_KEY);
 
-        if (shouldBeSnapshot) {
+        if (expectedType != SnapshotRecord.FALSE) {
             assertTrue("Snapshot marker expected but not found", (Boolean) snapshot);
-            assertEquals("Last snapshot record marker mismatch", shouldBeLastSnapshotRecord, lastSnapshotRecord);
         }
         else {
             assertNull("Snapshot marker not expected, but found", snapshot);
@@ -1066,16 +1093,11 @@ public abstract class AbstractRecordsProducerTest extends AbstractConnectorTest 
         if (envelope != null && Envelope.isEnvelopeSchema(envelope.schema())) {
             final Struct source = (Struct) envelope.get("source");
             final SnapshotRecord sourceSnapshot = SnapshotRecord.fromSource(source);
-            if (shouldBeSnapshot) {
-                if (shouldBeLastSnapshotRecord) {
-                    assertEquals("Expected snapshot last record", SnapshotRecord.LAST, sourceSnapshot);
-                }
-                else {
-                    assertEquals("Expected snapshot intermediary record", SnapshotRecord.TRUE, sourceSnapshot);
-                }
+            if (sourceSnapshot != null) {
+                assertEquals("Expected snapshot of type, but found", expectedType, sourceSnapshot);
             }
             else {
-                assertNull("Source snapshot marker not expected, but found", sourceSnapshot);
+                assertEquals("Source snapshot marker not expected, but found", expectedType, SnapshotRecord.FALSE);
             }
         }
     }
@@ -1129,7 +1151,7 @@ public abstract class AbstractRecordsProducerTest extends AbstractConnectorTest 
 
     protected static class SchemaAndValueField {
         @FunctionalInterface
-        protected static interface Condition {
+        protected interface Condition {
             void assertField(String fieldName, Object expectedValue, Object actualValue);
         }
 

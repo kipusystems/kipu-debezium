@@ -24,29 +24,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Action
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Get Date
         id: get-date
         run: |
-          echo "::set-output name=date::$(/bin/date -u "+%Y-%m")"
+          echo "date=$(/bin/date -u "+%Y-%m")" >> $GITHUB_OUTPUT
         shell: bash
 
       - name: Set up Java 17
-        uses: actions/setup-java@v2
+        uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
           java-version: 17
 
-      - name: Set up Maven
-        uses: stCarolas/setup-maven@v4.3
-        with:
-          maven-version: 3.8.4
-
       # This workflow uses its own dependency cache rather than the main debezium workflow cache because
       # we explicitly want to trigger this build on pushes separate from the other workflow.  
       - name: Cache Maven Repository
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: ~/.m2/repository
           # refresh cache every month to avoid unlimited growth
@@ -59,7 +54,7 @@ jobs:
 
       - name: Build and Install Debezium dependencies
         run: >
-          mvn clean install -pl debezium-bom,debezium-core,:debezium-ide-configs,:debezium-checkstyle,:debezium-revapi -am
+          ./mvnw clean install -pl debezium-bom,debezium-core,:debezium-ide-configs,:debezium-checkstyle,:debezium-revapi -am
           -DskipTests=true 
           -DskipITs=true 
           -Dformat.formatter.goal=validate 
@@ -72,7 +67,7 @@ jobs:
           QUAY_IO_USERNAME: ${{ secrets.QUAY_IO_USERNAME }}
           QUAY_IO_PASSWORD: ${{ secrets.QUAY_IO_PASSWORD }}
         run: >
-          mvn clean install -B -pl debezium-connector-oracle -am -Poracle,infinispan-buffer,oracle-ci,oracle-docker 
+          ./mvnw clean install -B -pl debezium-connector-oracle -am -Pinfinispan-buffer,oracle-docker,oracle-tests
           -Ddocker.username="$QUAY_IO_USERNAME" 
           -Ddocker.password="$QUAY_IO_PASSWORD" 
           -Dformat.formatter.goal=validate 

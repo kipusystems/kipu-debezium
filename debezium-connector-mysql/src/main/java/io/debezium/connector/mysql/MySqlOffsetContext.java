@@ -11,18 +11,18 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
 
 import io.debezium.connector.SnapshotRecord;
+import io.debezium.pipeline.CommonOffsetContext;
 import io.debezium.pipeline.source.snapshot.incremental.IncrementalSnapshotContext;
 import io.debezium.pipeline.source.snapshot.incremental.SignalBasedIncrementalSnapshotContext;
 import io.debezium.pipeline.spi.OffsetContext;
 import io.debezium.pipeline.txmetadata.TransactionContext;
 import io.debezium.relational.TableId;
-import io.debezium.schema.DataCollectionId;
+import io.debezium.spi.schema.DataCollectionId;
 
-public class MySqlOffsetContext implements OffsetContext {
+public class MySqlOffsetContext extends CommonOffsetContext<SourceInfo> {
 
     private static final String SNAPSHOT_COMPLETED_KEY = "snapshot_completed";
     public static final String EVENTS_TO_SKIP_OFFSET_KEY = "event";
@@ -31,7 +31,6 @@ public class MySqlOffsetContext implements OffsetContext {
     public static final String NON_GTID_TRANSACTION_ID_FORMAT = "file=%s,pos=%s";
 
     private final Schema sourceInfoSchema;
-    private final SourceInfo sourceInfo;
     private boolean snapshotCompleted;
     private final TransactionContext transactionContext;
     private final IncrementalSnapshotContext<TableId> incrementalSnapshotContext;
@@ -47,7 +46,7 @@ public class MySqlOffsetContext implements OffsetContext {
 
     public MySqlOffsetContext(boolean snapshot, boolean snapshotCompleted, TransactionContext transactionContext,
                               IncrementalSnapshotContext<TableId> incrementalSnapshotContext, SourceInfo sourceInfo) {
-        this.sourceInfo = sourceInfo;
+        super(sourceInfo);
         sourceInfoSchema = sourceInfo.schema();
 
         this.snapshotCompleted = snapshotCompleted;
@@ -110,11 +109,6 @@ public class MySqlOffsetContext implements OffsetContext {
     }
 
     @Override
-    public Struct getSourceInfo() {
-        return sourceInfo.struct();
-    }
-
-    @Override
     public boolean isSnapshotRunning() {
         return sourceInfo.isSnapshot() && !snapshotCompleted;
     }
@@ -132,11 +126,6 @@ public class MySqlOffsetContext implements OffsetContext {
     @Override
     public void preSnapshotCompletion() {
         snapshotCompleted = true;
-    }
-
-    @Override
-    public void postSnapshotCompletion() {
-        sourceInfo.setSnapshot(SnapshotRecord.FALSE);
     }
 
     private void setTransactionId() {
@@ -222,11 +211,6 @@ public class MySqlOffsetContext implements OffsetContext {
     }
 
     @Override
-    public void markLastSnapshotRecord() {
-        sourceInfo.setSnapshot(SnapshotRecord.LAST);
-    }
-
-    @Override
     public void event(DataCollectionId tableId, Instant timestamp) {
         sourceInfo.setSourceTime(timestamp);
         sourceInfo.tableEvent((TableId) tableId);
@@ -247,11 +231,6 @@ public class MySqlOffsetContext implements OffsetContext {
     @Override
     public TransactionContext getTransactionContext() {
         return transactionContext;
-    }
-
-    @Override
-    public void incrementalSnapshotEvents() {
-        sourceInfo.setSnapshot(SnapshotRecord.INCREMENTAL);
     }
 
     @Override
@@ -288,7 +267,7 @@ public class MySqlOffsetContext implements OffsetContext {
     public void setCompletedGtidSet(String gtidSet) {
         if (gtidSet != null && !gtidSet.trim().isEmpty()) {
             // Remove all the newline chars that exist in the GTID set string ...
-            String trimmedGtidSet = gtidSet.replaceAll("\n", "").replaceAll("\r", "");
+            String trimmedGtidSet = gtidSet.replace("\n", "").replace("\r", "");
             this.currentGtidSet = trimmedGtidSet;
             this.restartGtidSet = trimmedGtidSet;
         }
@@ -313,7 +292,7 @@ public class MySqlOffsetContext implements OffsetContext {
         sourceInfo.startGtid(gtid);
         if (gtidSet != null && !gtidSet.trim().isEmpty()) {
             // Remove all the newline chars that exist in the GTID set string ...
-            String trimmedGtidSet = gtidSet.replaceAll("\n", "").replaceAll("\r", "");
+            String trimmedGtidSet = gtidSet.replace("\n", "").replace("\r", "");
             // Set the GTID set that we'll use if restarting BEFORE successful completion of the events in this GTID ...
             this.restartGtidSet = this.currentGtidSet != null ? this.currentGtidSet : trimmedGtidSet;
             // Record the GTID set that includes the current transaction ...

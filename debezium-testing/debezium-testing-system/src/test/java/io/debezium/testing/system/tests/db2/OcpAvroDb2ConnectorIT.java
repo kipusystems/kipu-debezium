@@ -13,8 +13,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import io.debezium.testing.system.assertions.KafkaAssertions;
 import io.debezium.testing.system.fixtures.OcpClient;
 import io.debezium.testing.system.fixtures.connectors.Db2Connector;
-import io.debezium.testing.system.fixtures.databases.ocp.OcpDb2Fixture;
+import io.debezium.testing.system.fixtures.databases.ocp.OcpDb2;
 import io.debezium.testing.system.fixtures.kafka.OcpKafka;
+import io.debezium.testing.system.fixtures.operator.OcpApicurioOperator;
+import io.debezium.testing.system.fixtures.operator.OcpStrimziOperator;
 import io.debezium.testing.system.fixtures.registry.OcpApicurio;
 import io.debezium.testing.system.tools.kafka.ConnectorConfigBuilder;
 import io.debezium.testing.system.tools.kafka.KafkaConnectController;
@@ -29,9 +31,11 @@ import fixture5.annotations.Fixture;
 @Tag("avro")
 @Tag("apicurio")
 @Fixture(OcpClient.class)
+@Fixture(OcpStrimziOperator.class)
 @Fixture(OcpKafka.class)
+@Fixture(OcpApicurioOperator.class)
 @Fixture(OcpApicurio.class)
-@Fixture(OcpDb2Fixture.class)
+@Fixture(OcpDb2.class)
 @Fixture(Db2Connector.class)
 @ExtendWith(FixtureExtension.class)
 public class OcpAvroDb2ConnectorIT extends Db2Tests {

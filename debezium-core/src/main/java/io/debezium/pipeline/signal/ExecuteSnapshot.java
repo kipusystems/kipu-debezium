@@ -6,6 +6,7 @@
 package io.debezium.pipeline.signal;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -16,27 +17,21 @@ import io.debezium.document.Document;
 import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.signal.Signal.Payload;
 import io.debezium.pipeline.spi.Partition;
-import io.debezium.schema.DataCollectionId;
+import io.debezium.spi.schema.DataCollectionId;
 
 /**
  * The action to trigger an ad-hoc snapshot.
  * The action parameters are {@code type} of snapshot and list of {@code data-collections} on which the
  * snapshot will be executed.
- * 
+ *
  * @author Jiri Pechanec
  *
  */
-public class ExecuteSnapshot<P extends Partition> implements Signal.Action<P> {
+public class ExecuteSnapshot<P extends Partition> extends AbstractSnapshotSignal<P> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ExecuteSnapshot.class);
-    private static final String FIELD_DATA_COLLECTIONS = "data-collections";
-    private static final String FIELD_TYPE = "type";
 
     public static final String NAME = "execute-snapshot";
-
-    public enum SnapshotType {
-        INCREMENTAL
-    }
 
     private final EventDispatcher<P, ? extends DataCollectionId> dispatcher;
 
@@ -51,29 +46,16 @@ public class ExecuteSnapshot<P extends Partition> implements Signal.Action<P> {
             return false;
         }
         SnapshotType type = getSnapshotType(signalPayload.data);
-        LOGGER.info("Requested '{}' snapshot of data collections '{}'", type, dataCollections);
+        Optional<String> additionalCondition = getAdditionalCondition(signalPayload.data);
+        LOGGER.info("Requested '{}' snapshot of data collections '{}' with additional condition '{}'", type, dataCollections,
+                additionalCondition.orElse("No condition passed"));
         switch (type) {
             case INCREMENTAL:
                 dispatcher.getIncrementalSnapshotChangeEventSource().addDataCollectionNamesToSnapshot(
-                        signalPayload.partition, dataCollections, signalPayload.offsetContext);
+                        signalPayload.partition, dataCollections, additionalCondition, signalPayload.offsetContext);
                 break;
         }
         return true;
-    }
-
-    public static SnapshotType getSnapshotType(Document data) {
-        final String typeStr = data.getString(FIELD_TYPE);
-        SnapshotType type = SnapshotType.INCREMENTAL;
-        if (typeStr != null) {
-            for (SnapshotType option : SnapshotType.values()) {
-                if (option.name().equalsIgnoreCase(typeStr)) {
-                    return option;
-                }
-            }
-            LOGGER.warn("Detected an unexpected snapshot type '{}'", typeStr);
-            return null;
-        }
-        return type;
     }
 
     public static List<String> getDataCollections(Document data) {
@@ -89,4 +71,8 @@ public class ExecuteSnapshot<P extends Partition> implements Signal.Action<P> {
                 .collect(Collectors.toList());
     }
 
+    public static Optional<String> getAdditionalCondition(Document data) {
+        String additionalCondition = data.getString(FIELD_ADDITIONAL_CONDITION);
+        return (additionalCondition == null || additionalCondition.trim().isEmpty()) ? Optional.empty() : Optional.of(additionalCondition);
+    }
 }

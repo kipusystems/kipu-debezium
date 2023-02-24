@@ -15,6 +15,7 @@ import io.debezium.connector.mongodb.MongoDbPartition;
 import io.debezium.pipeline.ConnectorEvent;
 import io.debezium.pipeline.metrics.DefaultSnapshotChangeEventSourceMetrics;
 import io.debezium.pipeline.source.spi.EventMetadataProvider;
+import io.debezium.util.Collect;
 
 /**
  * @author Chris Cranford
@@ -27,7 +28,8 @@ public class MongoDbSnapshotChangeEventSourceMetrics extends DefaultSnapshotChan
 
     public <T extends CdcSourceTaskContext> MongoDbSnapshotChangeEventSourceMetrics(T taskContext, ChangeEventQueueMetrics changeEventQueueMetrics,
                                                                                     EventMetadataProvider metadataProvider) {
-        super(taskContext, changeEventQueueMetrics, metadataProvider);
+        super(taskContext, changeEventQueueMetrics, metadataProvider,
+                Collect.linkMapOf("context", "snapshot", "server", taskContext.getConnectorName(), "task", taskContext.getTaskId()));
     }
 
     @Override

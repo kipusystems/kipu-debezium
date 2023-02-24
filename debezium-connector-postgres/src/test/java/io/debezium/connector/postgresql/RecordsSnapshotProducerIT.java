@@ -9,12 +9,14 @@ package io.debezium.connector.postgresql;
 import static io.debezium.connector.postgresql.TestHelper.PK_FIELD;
 import static io.debezium.connector.postgresql.TestHelper.topicName;
 import static io.debezium.junit.EqualityCheck.LESS_THAN;
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -23,18 +25,19 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
-import org.fest.assertions.Assertions;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 
 import io.debezium.config.CommonConnectorConfig.BinaryHandlingMode;
 import io.debezium.config.Configuration;
+import io.debezium.connector.SnapshotRecord;
 import io.debezium.connector.postgresql.PostgresConnectorConfig.SnapshotMode;
 import io.debezium.data.Bits;
 import io.debezium.data.Enum;
@@ -49,7 +52,6 @@ import io.debezium.relational.RelationalDatabaseConnectorConfig.DecimalHandlingM
 import io.debezium.spi.converter.CustomConverter;
 import io.debezium.spi.converter.RelationalColumn;
 import io.debezium.util.Collect;
-import io.debezium.util.Testing;
 
 /**
  * Integration test for {@link RecordsSnapshotProducerIT}
@@ -83,14 +85,16 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
 
         Map<String, List<SchemaAndValueField>> expectedValuesByTopicName = super.schemaAndValuesByTopicName();
-        consumer.process(record -> assertReadRecord(record, expectedValuesByTopicName));
-        Testing.Print.enable();
-        // check the offset information for each record
-        while (!consumer.isEmpty()) {
-            SourceRecord record = consumer.remove();
-            assertRecordOffsetAndSnapshotSource(record, true, consumer.isEmpty());
+        AtomicInteger totalCount = new AtomicInteger(0);
+        consumer.process(record -> {
+            assertReadRecord(record, expectedValuesByTopicName);
             assertSourceInfo(record);
-        }
+
+            SnapshotRecord expected = expectedSnapshotRecordFromPosition(
+                    totalCount.incrementAndGet(), expectedValuesByTopicName.size(),
+                    1, 1);
+            assertRecordOffsetAndSnapshotSource(record, expected);
+        });
     }
 
     public static class CustomDatatypeConverter implements CustomConverter<SchemaBuilder, RelationalColumn> {
@@ -204,13 +208,13 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         SourceRecord first = consumer.remove();
         VerifyRecord.isValidInsert(first, PK_FIELD, 2);
         assertEquals(topicName("s1.a"), first.topic());
-        assertRecordOffsetAndSnapshotSource(first, false, false);
+        assertRecordOffsetAndSnapshotSource(first, SnapshotRecord.FALSE);
         assertSourceInfo(first, TestHelper.TEST_DATABASE, "s1", "a");
 
         SourceRecord second = consumer.remove();
         VerifyRecord.isValidInsert(second, PK_FIELD, 2);
         assertEquals(topicName("s2.a"), second.topic());
-        assertRecordOffsetAndSnapshotSource(second, false, false);
+        assertRecordOffsetAndSnapshotSource(second, SnapshotRecord.FALSE);
         assertSourceInfo(second, TestHelper.TEST_DATABASE, "s2", "a");
 
         // now shut down the producers and insert some more records
@@ -231,7 +235,10 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
             int counterVal = counter.getAndIncrement();
             int expectedPk = (counterVal % 3) + 1; // each table has 3 entries keyed 1-3
             VerifyRecord.isValidRead(record, PK_FIELD, expectedPk);
-            assertRecordOffsetAndSnapshotSource(record, true, counterVal == (expectedRecordsCount - 1));
+            SnapshotRecord expectedType = (counterVal % 3) == 0 ? SnapshotRecord.FIRST_IN_DATA_COLLECTION
+                    : (counterVal % 3) == 1 ? SnapshotRecord.TRUE
+                            : (counterVal == expectedRecordsCount - 1) ? SnapshotRecord.LAST : SnapshotRecord.LAST_IN_DATA_COLLECTION;
+            assertRecordOffsetAndSnapshotSource(record, expectedType);
             assertSourceInfo(record);
         });
         consumer.clear();
@@ -244,12 +251,12 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
         first = consumer.remove();
         VerifyRecord.isValidInsert(first, PK_FIELD, 4);
-        assertRecordOffsetAndSnapshotSource(first, false, false);
+        assertRecordOffsetAndSnapshotSource(first, SnapshotRecord.FALSE);
         assertSourceInfo(first, TestHelper.TEST_DATABASE, "s1", "a");
 
         second = consumer.remove();
         VerifyRecord.isValidInsert(second, PK_FIELD, 4);
-        assertRecordOffsetAndSnapshotSource(second, false, false);
+        assertRecordOffsetAndSnapshotSource(second, SnapshotRecord.FALSE);
         assertSourceInfo(second, TestHelper.TEST_DATABASE, "s2", "a");
     }
 
@@ -305,10 +312,10 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
 
         final SourceRecord first = consumer.remove();
         VerifyRecord.isValidRead(first, PK_FIELD, 1);
-        assertRecordOffsetAndSnapshotSource(first, true, true);
+        assertRecordOffsetAndSnapshotSource(first, SnapshotRecord.LAST);
         final SourceRecord second = consumer.remove();
         assertThat(second.topic()).startsWith("__debezium-heartbeat");
-        assertRecordOffsetAndSnapshotSource(second, false, false);
+        assertRecordOffsetAndSnapshotSource(second, SnapshotRecord.FALSE);
     }
 
     private void assertReadRecord(SourceRecord record, Map<String, List<SchemaAndValueField>> expectedValuesByTopicName) {
@@ -334,14 +341,16 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
 
         Map<String, List<SchemaAndValueField>> expectedValuesByTopicName = super.schemaAndValuesByTopicNameAdaptiveTimeMicroseconds();
-        consumer.process(record -> assertReadRecord(record, expectedValuesByTopicName));
-
-        // check the offset information for each record
-        while (!consumer.isEmpty()) {
-            SourceRecord record = consumer.remove();
-            assertRecordOffsetAndSnapshotSource(record, true, consumer.isEmpty());
+        AtomicInteger totalCount = new AtomicInteger(0);
+        consumer.process(record -> {
+            assertReadRecord(record, expectedValuesByTopicName);
             assertSourceInfo(record);
-        }
+
+            SnapshotRecord expected = expectedSnapshotRecordFromPosition(
+                    totalCount.incrementAndGet(), expectedValuesByTopicName.size(),
+                    1, 1);
+            assertRecordOffsetAndSnapshotSource(record, expected);
+        });
     }
 
     @Test
@@ -362,14 +371,12 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
 
         Map<String, List<SchemaAndValueField>> expectedValuesByTopicName = super.schemaAndValuesByTopicNameStringEncodedDecimals();
-        consumer.process(record -> assertReadRecord(record, expectedValuesByTopicName));
-
-        // check the offset information for each record
-        while (!consumer.isEmpty()) {
-            SourceRecord record = consumer.remove();
-            assertRecordOffsetAndSnapshotSource(record, true, consumer.isEmpty());
+        consumer.process(record -> {
+            assertReadRecord(record, expectedValuesByTopicName);
             assertSourceInfo(record);
-        }
+
+            assertRecordOffsetAndSnapshotSource(record, SnapshotRecord.LAST_IN_DATA_COLLECTION);
+        });
     }
 
     @Test
@@ -405,44 +412,47 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
                 "FROM generate_series(1, 20);");
 
         // then start the producer and validate all records are there
-        buildNoStreamProducer(TestHelper.defaultConfig());
-
-        TestConsumer consumer = testConsumer(1 + 30);
-        consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
+        Configuration.Builder config = TestHelper.defaultConfig();
+        config.with(PostgresConnectorConfig.TABLE_INCLUDE_LIST, "public.first_table, public.partitioned_1_100, public.partitioned_101_200");
+        buildNoStreamProducer(config);
 
         Set<Integer> ids = new HashSet<>();
 
-        Map<String, Integer> topicCounts = Collect.hashMapOf(
-                "test_server.public.first_table", 0,
-                "test_server.public.partitioned", 0,
-                "test_server.public.partitioned_1_100", 0,
-                "test_server.public.partitioned_101_200", 0);
+        Map<String, Integer> expectedTopicCounts = Collect.hashMapOf(
+                "test_server.public.first_table", 1,
+                "test_server.public.partitioned_1_100", 10,
+                "test_server.public.partitioned_101_200", 20);
+        int expectedTotalCount = expectedTopicCounts.values().stream().mapToInt(Integer::intValue).sum();
+
+        TestConsumer consumer = testConsumer(expectedTotalCount);
+        consumer.await(TestHelper.waitTimeForRecords() * 30L, TimeUnit.SECONDS);
+
+        Map<String, Integer> actualTopicCounts = new HashMap<>();
+        AtomicInteger actualTotalCount = new AtomicInteger(0);
 
         consumer.process(record -> {
+            assertSourceInfo(record);
             Struct key = (Struct) record.key();
             if (key != null) {
                 final Integer id = key.getInt32("pk");
-                Assertions.assertThat(ids).excludes(id);
+                assertThat(ids).doesNotContain(id);
                 ids.add(id);
             }
-            topicCounts.put(record.topic(), topicCounts.get(record.topic()) + 1);
+
+            actualTopicCounts.put(record.topic(), actualTopicCounts.getOrDefault(record.topic(), 0) + 1);
+
+            SnapshotRecord expected = expectedSnapshotRecordFromPosition(
+                    actualTotalCount.incrementAndGet(), expectedTotalCount,
+                    actualTopicCounts.get(record.topic()), expectedTopicCounts.get(record.topic()));
+            assertRecordOffsetAndSnapshotSource(record, expected);
         });
 
         // verify distinct records
-        assertEquals(31, ids.size());
+        assertEquals(expectedTotalCount, actualTotalCount.get());
+        assertEquals(expectedTotalCount, ids.size());
 
         // verify each topic contains exactly the number of input records
-        assertEquals(1, topicCounts.get("test_server.public.first_table").intValue());
-        assertEquals(0, topicCounts.get("test_server.public.partitioned").intValue());
-        assertEquals(10, topicCounts.get("test_server.public.partitioned_1_100").intValue());
-        assertEquals(20, topicCounts.get("test_server.public.partitioned_101_200").intValue());
-
-        // check the offset information for each record
-        while (!consumer.isEmpty()) {
-            SourceRecord record = consumer.remove();
-            assertRecordOffsetAndSnapshotSource(record, true, consumer.isEmpty());
-            assertSourceInfo(record);
-        }
+        assertTrue("Expected counts per topic don't match", expectedTopicCounts.entrySet().containsAll(actualTopicCounts.entrySet()));
     }
 
     @Test
@@ -963,6 +973,24 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
     }
 
     @Test
+    @FixFor("DBZ-5544")
+    public void shouldGenerateSnapshotForByteaAsBase64UrlSafeString() throws Exception {
+        TestHelper.dropAllSchemas();
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        TestHelper.execute(INSERT_BYTEA_BINMODE_STMT);
+
+        buildNoStreamProducer(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.BINARY_HANDLING_MODE, PostgresConnectorConfig.BinaryHandlingMode.BASE64_URL_SAFE));
+
+        TestConsumer consumer = testConsumer(1, "public");
+        consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
+
+        final Map<String, List<SchemaAndValueField>> expectedValueByTopicName = Collect.hashMapOf("public.bytea_binmode_table", schemaAndValueForByteaBase64UrlSafe());
+
+        consumer.process(record -> assertReadRecord(record, expectedValueByTopicName));
+    }
+
+    @Test
     @FixFor("DBZ-1814")
     public void shouldGenerateSnapshotForByteaAsHexString() throws Exception {
         TestHelper.dropAllSchemas();
@@ -1018,6 +1046,25 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
     }
 
     @Test
+    @FixFor("DBZ-5544")
+    public void shouldGenerateSnapshotForUnknownColumnAsBase64UrlSafe() throws Exception {
+        TestHelper.dropAllSchemas();
+        TestHelper.executeDDL("postgres_create_tables.ddl");
+        TestHelper.execute(INSERT_CIRCLE_STMT);
+
+        buildNoStreamProducer(TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.INCLUDE_UNKNOWN_DATATYPES, true)
+                .with(PostgresConnectorConfig.BINARY_HANDLING_MODE, BinaryHandlingMode.BASE64_URL_SAFE));
+
+        TestConsumer consumer = testConsumer(1, "public");
+        consumer.await(TestHelper.waitTimeForRecords() * 30, TimeUnit.SECONDS);
+
+        final Map<String, List<SchemaAndValueField>> expectedValueByTopicName = Collect.hashMapOf("public.circle_table", schemaAndValueForUnknownColumnBase64UrlSafe());
+
+        consumer.process(record -> assertReadRecord(record, expectedValueByTopicName));
+    }
+
+    @Test
     @FixFor("DBZ-1814")
     public void shouldGenerateSnapshotForUnknownColumnAsHex() throws Exception {
         TestHelper.dropAllSchemas();
@@ -1034,6 +1081,44 @@ public class RecordsSnapshotProducerIT extends AbstractRecordsProducerTest {
         final Map<String, List<SchemaAndValueField>> expectedValueByTopicName = Collect.hashMapOf("public.circle_table", schemaAndValueForUnknownColumnHex());
 
         consumer.process(record -> assertReadRecord(record, expectedValueByTopicName));
+    }
+
+    @Test
+    @FixFor("DBZ-5240")
+    @SkipWhenDatabaseVersion(check = LESS_THAN, major = 11, reason = "Primary keys on partitioned tables are supported only on Postgres 11+")
+    public void shouldIncludePartitionedTableIntoSnapshot() throws Exception {
+
+        // create partitioned table
+        TestHelper.dropAllSchemas();
+        TestHelper.execute(
+                "CREATE SCHEMA s1;"
+                        + "CREATE TABLE s1.part (pk SERIAL, aa integer, PRIMARY KEY(pk, aa)) PARTITION BY RANGE (aa);"
+                        + "CREATE TABLE s1.part1 PARTITION OF s1.part FOR VALUES FROM (0) TO (500);"
+                        + "CREATE TABLE s1.part2 PARTITION OF s1.part FOR VALUES FROM (500) TO (1000);");
+
+        // insert records
+        TestHelper.execute("INSERT into s1.part VALUES(1, 1)");
+        TestHelper.execute("INSERT into s1.part VALUES(2, 2)");
+        TestHelper.execute("INSERT into s1.part VALUES(3, 700)");
+        TestHelper.execute("INSERT into s1.part VALUES(4, 800)");
+
+        // start connector
+        Configuration.Builder configBuilder = TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL_ONLY.getValue())
+                .with(PostgresConnectorConfig.TABLE_INCLUDE_LIST, "s1.part");
+        start(PostgresConnector.class, configBuilder.build());
+        assertConnectorIsRunning();
+        waitForSnapshotToBeCompleted();
+
+        // check the records from the snapshot
+        final int expectedCount = 4;
+        final int[] expectedPks = { 1, 2, 3, 4 };
+        SourceRecords actualRecords = consumeRecordsByTopic(expectedCount);
+        assertThat(actualRecords.allRecordsInOrder().size()).isEqualTo(expectedCount);
+        List<SourceRecord> recordsForTopicPart = actualRecords.recordsForTopic(topicName("s1.part"));
+        assertThat(recordsForTopicPart.size()).isEqualTo(expectedCount);
+        IntStream.range(0, expectedCount)
+                .forEach(i -> VerifyRecord.isValidRead(recordsForTopicPart.remove(0), PK_FIELD, expectedPks[i]));
     }
 
     private void buildNoStreamProducer(Configuration.Builder config) {

@@ -40,6 +40,7 @@ import io.debezium.connector.oracle.Scn;
 import io.debezium.connector.oracle.logminer.logwriter.CommitLogWriterFlushStrategy;
 import io.debezium.connector.oracle.logminer.logwriter.LogWriterFlushStrategy;
 import io.debezium.connector.oracle.logminer.logwriter.RacCommitLogWriterFlushStrategy;
+import io.debezium.connector.oracle.logminer.logwriter.ReadOnlyLogWriterFlushStrategy;
 import io.debezium.connector.oracle.logminer.processor.LogMinerEventProcessor;
 import io.debezium.jdbc.JdbcConfiguration;
 import io.debezium.pipeline.ErrorHandler;
@@ -61,6 +62,8 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
     private static final Logger LOGGER = LoggerFactory.getLogger(LogMinerStreamingChangeEventSource.class);
     private static final int MAXIMUM_NAME_LENGTH = 30;
     private static final String ALL_COLUMN_LOGGING = "ALL COLUMN LOGGING";
+    private static final int MINING_START_RETRIES = 5;
+    private static final Long SMALL_REDO_LOG_WARNING = 524_288_000L;
 
     private final OracleConnection jdbcConnection;
     private final EventDispatcher<OraclePartition, TableId> dispatcher;
@@ -144,6 +147,8 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                 setNlsSessionParameters(jdbcConnection);
                 checkDatabaseAndTableState(jdbcConnection, connectorConfig.getPdbName(), schema);
 
+                logOnlineRedoLogSizes(connectorConfig);
+
                 try (LogMinerEventProcessor processor = createProcessor(context, partition, offsetContext)) {
 
                     if (archiveLogOnlyMode && !waitForStartScnInArchiveLogs(context, startScn)) {
@@ -152,6 +157,7 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
 
                     initializeRedoLogsForMining(jdbcConnection, false, startScn);
 
+                    int retryAttempts = 1;
                     Stopwatch sw = Stopwatch.accumulating().start();
                     while (context.isRunning()) {
                         // Calculate time difference before each mining session to detect time zone offset changes (e.g. DST) on database server
@@ -199,12 +205,15 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                         }
 
                         if (context.isRunning()) {
-                            startMiningSession(jdbcConnection, startScn, endScn);
-                            startScn = processor.process(startScn, endScn);
-                            streamingMetrics.setCurrentBatchProcessingTime(Duration.between(start, Instant.now()));
-
-                            captureSessionMemoryStatistics(jdbcConnection);
-
+                            if (!startMiningSession(jdbcConnection, startScn, endScn, retryAttempts)) {
+                                retryAttempts++;
+                            }
+                            else {
+                                retryAttempts = 1;
+                                startScn = processor.process(startScn, endScn);
+                                streamingMetrics.setCurrentBatchProcessingTime(Duration.between(start, Instant.now()));
+                                captureSessionMemoryStatistics(jdbcConnection);
+                            }
                             pauseBetweenMiningSessions();
                         }
                     }
@@ -223,10 +232,32 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
         }
     }
 
+    private void logOnlineRedoLogSizes(OracleConnectorConfig config) throws SQLException {
+        jdbcConnection.query("SELECT GROUP#, BYTES FROM V$LOG ORDER BY 1", rs -> {
+            LOGGER.info("Redo Log Group Sizes:");
+            boolean potentiallySmallLogs = false;
+            while (rs.next()) {
+                long logSize = rs.getLong(2);
+                if (logSize < SMALL_REDO_LOG_WARNING) {
+                    potentiallySmallLogs = true;
+                }
+                LOGGER.info("\tGroup #{}: {} bytes", rs.getInt(1), logSize);
+            }
+            if (config.getAdapter().getType().equals(LogMinerAdapter.TYPE)) {
+                if (config.getLogMiningStrategy() == OracleConnectorConfig.LogMiningStrategy.CATALOG_IN_REDO) {
+                    if (potentiallySmallLogs) {
+                        LOGGER.warn("Redo logs may be sized too small using the default mining strategy, " +
+                                "consider increasing redo log sizes to a minimum of 500MB.");
+                    }
+                }
+            }
+        });
+    }
+
     /**
      * Computes the start SCN for the first mining session.
      *
-     * Normally, this would be the snapshot SCN, but if there were pending transactions at the time 
+     * Normally, this would be the snapshot SCN, but if there were pending transactions at the time
      * the snapshot was taken, we'd miss the events in those transactions that have an SCN smaller
      * than the snapshot SCN.
      *
@@ -264,11 +295,10 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
             // Make sure the commit SCN is at least the snapshot SCN - 1.
             // This ensures we'll never emit events for transactions that were complete before the snapshot was
             // taken.
-            Scn originalCommitScn = offsetContext.getCommitScn();
-            if (originalCommitScn == null || originalCommitScn.compareTo(snapshotScn) < 0) {
+            if (offsetContext.getCommitScn().compareTo(snapshotScn) < 0) {
                 LOGGER.info("Setting commit SCN to {} (snapshot SCN - 1) to ensure we don't double-emit events from pre-snapshot transactions.",
                         snapshotScn.subtract(Scn.ONE));
-                offsetContext.setCommitScn(snapshotScn.subtract(Scn.ONE));
+                offsetContext.getCommitScn().setCommitScnOnAllThreads(snapshotScn.subtract(Scn.ONE));
             }
 
             // set start SCN to minScn
@@ -538,19 +568,29 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
      * @param connection database connection, should not be {@code null}
      * @param startScn mining session's starting system change number (exclusive), should not be {@code null}
      * @param endScn mining session's ending system change number (inclusive), can be {@code null}
+     * @param attempts the number of mining start attempts
+     * @return true if the session was started successfully, false if it should be retried
      * @throws SQLException if mining session failed to start
      */
-    public void startMiningSession(OracleConnection connection, Scn startScn, Scn endScn) throws SQLException {
+    public boolean startMiningSession(OracleConnection connection, Scn startScn, Scn endScn, int attempts) throws SQLException {
         LOGGER.trace("Starting mining session startScn={}, endScn={}, strategy={}, continuous={}",
                 startScn, endScn, strategy, isContinuousMining);
         try {
             Instant start = Instant.now();
             // NOTE: we treat startSCN as the _exclusive_ lower bound for mining,
-            // whereas START_LOGMNR takes an _inclusive_ lower bound. Hence the increment.
+            // whereas START_LOGMNR takes an _inclusive_ lower bound, hence the increment.
             connection.executeWithoutCommitting(SqlUtils.startLogMinerStatement(startScn.add(Scn.ONE), endScn, strategy, isContinuousMining));
             streamingMetrics.addCurrentMiningSessionStart(Duration.between(start, Instant.now()));
+            return true;
         }
         catch (SQLException e) {
+            if (e.getErrorCode() == 1291 || e.getMessage().startsWith("ORA-01291")) {
+                if (attempts <= MINING_START_RETRIES) {
+                    LOGGER.warn("Failed to start Oracle LogMiner session, retrying...");
+                    return false;
+                }
+                LOGGER.error("Failed to start Oracle LogMiner after '{}' attempts.", MINING_START_RETRIES, e);
+            }
             LOGGER.error("Got exception when starting mining session.", e);
             // Capture the database state before throwing the exception up
             LogMinerDatabaseStateWriter.write(connection);
@@ -811,6 +851,9 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
      * @return the strategy to be used to flush Oracle's LGWR process, never {@code null}.
      */
     private LogWriterFlushStrategy resolveFlushStrategy() {
+        if (connectorConfig.isLogMiningReadOnly()) {
+            return new ReadOnlyLogWriterFlushStrategy();
+        }
         if (connectorConfig.isRacSystem()) {
             return new RacCommitLogWriterFlushStrategy(connectorConfig, jdbcConfiguration, streamingMetrics);
         }
@@ -860,7 +903,7 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
     }
 
     @Override
-    public void commitOffset(Map<String, ?> offset) {
+    public void commitOffset(Map<String, ?> partition, Map<String, ?> offset) {
         // nothing to do
     }
 }

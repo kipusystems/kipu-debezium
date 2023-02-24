@@ -16,6 +16,7 @@ import io.debezium.connector.mongodb.PrimaryElectionEvent;
 import io.debezium.pipeline.ConnectorEvent;
 import io.debezium.pipeline.metrics.DefaultStreamingChangeEventSourceMetrics;
 import io.debezium.pipeline.source.spi.EventMetadataProvider;
+import io.debezium.util.Collect;
 
 /**
  * @author Chris Cranford
@@ -29,7 +30,8 @@ public class MongoDbStreamingChangeEventSourceMetrics extends DefaultStreamingCh
 
     <T extends CdcSourceTaskContext> MongoDbStreamingChangeEventSourceMetrics(T taskContext, ChangeEventQueueMetrics changeEventQueueMetrics,
                                                                               EventMetadataProvider eventMetadataProvider) {
-        super(taskContext, changeEventQueueMetrics, eventMetadataProvider);
+        super(taskContext, changeEventQueueMetrics, eventMetadataProvider,
+                Collect.linkMapOf("context", "streaming", "server", taskContext.getConnectorName(), "task", taskContext.getTaskId()));
     }
 
     @Override

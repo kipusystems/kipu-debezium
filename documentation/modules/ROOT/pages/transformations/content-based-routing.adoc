@@ -43,9 +43,16 @@ For example:
 The content-based routing SMT supports scripting languages that integrate with https://jcp.org/en/jsr/detail?id=223[JSR 223] (Scripting for the Java(TM) Platform).
 
 {prodname} does not come with any implementations of the JSR 223 API.
-To use an expression language with {prodname}, you must download the JSR 223 script engine implementation for the language, and add to your {prodname} connector plug-in directories, along any other JAR files used by the language implementation.
+To use an expression language with {prodname}, you must download the JSR 223 script engine implementation for the language.
+ifdef::community[]
 For example, for Groovy 3, you can download its JSR 223 implementation from https://groovy-lang.org/.
-The JSR 223 implementation for GraalVM JavaScript is available at https://github.com/graalvm/graaljs.
+The JSR223 implementation for GraalVM JavaScript is available at https://github.com/graalvm/graaljs.
+After you obtain the script engine files, you add them to your {prodname} connector plug-in directories, along any other JAR files used by the language implementation.
+endif::community[]
+ifdef::product[]
+Depending on the method that you use to deploy {prodname}, you can automatically download the required artifacts from Maven Central,
+or you can manually download the artifacts, and then add them to your {prodname} connector plug-in directories, along any other JAR files used by the language implementation.
+endif::product[]
 
 // Type: procedure
 // Title: Setting up the {prodname} content-based-routing SMT
@@ -55,8 +62,14 @@ The JSR 223 implementation for GraalVM JavaScript is available at https://github
 
 For security reasons, the content-based routing SMT is not included with the {prodname} connector archives.
 Instead, it is provided in a separate artifact, `debezium-scripting-{debezium-version}.tar.gz`.
-To use the content-based routing SMT with a {prodname} connector plug-in, you must explicitly add the SMT artifact to your Kafka Connect environment.
 
+ifdef::product[]
+If you deploy the {prodname} connector by building a custom Kafka Connect container image from a Dockerfile, to use the filter SMT, you must explicitly add the SMT artifact to your Kafka Connect environment.
+When you use {StreamsName} to deploy the connector, it can download the required artifacts automatically based on configuration parameters that you specify in the Kafka Connect custom resource.
+endif::product[]
+ifdef::community[]
+To use the content-based routing SMT with a {prodname} connector plug-in, you must explicitly add the SMT artifact to your Kafka Connect environment.
+endif::community[]
 IMPORTANT: After the routing SMT is present in a Kafka Connect instance, any user who is allowed to add a connector to the instance can run scripting expressions.
 To ensure that scripting expressions can be run only by authorized users, be sure to secure the Kafka Connect instance and its configuration interface before you add the routing SMT.
 
@@ -70,8 +83,11 @@ With https://zookeeper.apache.org[Zookeeper], http://kafka.apache.org/[Kafka], {
 endif::community[]
 
 ifdef::product[]
+The following procedure applies if you build your Kafka Connect container image from a Dockerfile.
+If you use {StreamsName} to create the Kafka Connect image, follow the instructions in the deployment topic for your connector.
+
 .Procedure
-. From a browser, open the link:{DebeziumDownload}, and download the {prodname} scripting SMT archive (`debezium-scripting-{debezium-version}.tar.gz`).
+. From a browser, open the link:{LinkDebeziumDownloads}[{NameDebeziumDownloads}], and download the {prodname} scripting SMT archive (`debezium-scripting-{debezium-version}.tar.gz`).
 . Extract the contents of the archive into the {prodname} plug-in directories of your Kafka Connect environment.
 . Obtain a JSR-223 script engine implementation and add its contents to the {prodname} plug-in directories of your Kafka Connect environment.
 . Restart the Kafka Connect process to pick up the new JAR files.
@@ -118,6 +134,11 @@ transforms.route.topic.expression=value.op == 'u' ? 'updates' : null
 The preceding example specifies the use of the `Groovy` expression language.
 
 Records that do not match the pattern are routed to the default topic.
+
+.Customizing the configuration
+The preceding example shows a simple SMT configuration that is designed to process only DML events, which contain an `op` field.
+Other types of messages that a connector might emit (heartbeat messages, tombstone messages, or metadata messages about transactions or schema changes) do not contain this field.
+To avoid processing failures, you can define xref:options-for-applying-the-transformation-selectively[an SMT predicate statement that selectively applies the transformation] to specific events only.
 
 // Type: concept
 // ModuleID: variables-for-use-in-debezium-content-based-routing-expressions
@@ -167,7 +188,7 @@ In addition to the change event messages that a {prodname} connector emits when 
 Because the structure of these other messages differs from the structure of the change event messages that the SMT is designed to process, it's best to configure the connector to selectively apply the SMT, so that it processes only the intended data change messages.
 You can use one of the following methods to configure the connector to apply the SMT selectively:
 
-* xref:{link-smt-predicates}#applying-transformation-selectively[Configure an SMT predicate for the transformation].
+* xref:{link-smt-predicates}#applying-transformations-selectively[Configure an SMT predicate for the transformation].
 * Use the xref:content-based-router-topic-regex[topic.regex] configuration option for the SMT.
 
 // Type: reference

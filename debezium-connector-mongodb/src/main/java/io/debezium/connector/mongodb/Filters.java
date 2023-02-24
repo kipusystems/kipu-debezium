@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.function.Predicate;
 
 import io.debezium.config.Configuration;
+import io.debezium.config.Field;
 import io.debezium.connector.mongodb.FieldSelector.FieldFilter;
 import io.debezium.function.Predicates;
 import io.debezium.util.Collect;
@@ -20,8 +21,7 @@ import io.debezium.util.Collect;
  */
 public final class Filters {
 
-    protected static final Set<String> BUILT_IN_DB_NAMES = Collect.unmodifiableSet("local", "admin", "config");
-
+    private final FilterConfig config;
     private final Predicate<String> databaseFilter;
     private final Predicate<CollectionId> collectionFilter;
     private final FieldSelector fieldSelector;
@@ -29,42 +29,52 @@ public final class Filters {
     /**
      * Create an instance of the filters.
      *
-     * @param config the configuration; may not be null
+     * @param configuration the configuration; may not be null
      */
-    public Filters(Configuration config) {
-        String dbIncludeList = config.getFallbackStringProperty(MongoDbConnectorConfig.DATABASE_INCLUDE_LIST, MongoDbConnectorConfig.DATABASE_WHITELIST);
-        String dbExcludeList = config.getFallbackStringProperty(MongoDbConnectorConfig.DATABASE_EXCLUDE_LIST, MongoDbConnectorConfig.DATABASE_BLACKLIST);
-        if (dbIncludeList != null && !dbIncludeList.trim().isEmpty()) {
+    public Filters(Configuration configuration) {
+        this.config = new FilterConfig(configuration);
+
+        String dbIncludeList = config.getDbIncludeList();
+        String dbExcludeList = config.getDbExcludeList();
+        if (dbIncludeList != null) {
             databaseFilter = Predicates.includes(dbIncludeList);
         }
-        else if (dbExcludeList != null && !dbExcludeList.trim().isEmpty()) {
+        else if (dbExcludeList != null) {
             databaseFilter = Predicates.excludes(dbExcludeList);
         }
         else {
             databaseFilter = (db) -> true;
         }
 
-        String collectionIncludeList = config.getFallbackStringProperty(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST,
-                MongoDbConnectorConfig.COLLECTION_WHITELIST);
-        String collectionExcludeList = config.getFallbackStringProperty(MongoDbConnectorConfig.COLLECTION_EXCLUDE_LIST,
-                MongoDbConnectorConfig.COLLECTION_BLACKLIST);
+        String collectionIncludeList = config.getCollectionIncludeList();
+        String collectionExcludeList = config.getCollectionExcludeList();
         final Predicate<CollectionId> collectionFilter;
-        if (collectionIncludeList != null && !collectionIncludeList.trim().isEmpty()) {
+        if (collectionIncludeList != null) {
             collectionFilter = Predicates.includes(collectionIncludeList, CollectionId::namespace);
         }
-        else if (collectionExcludeList != null && !collectionExcludeList.trim().isEmpty()) {
+        else if (collectionExcludeList != null) {
             collectionFilter = Predicates.excludes(collectionExcludeList, CollectionId::namespace);
         }
         else {
             collectionFilter = (id) -> true;
         }
+
         Predicate<CollectionId> isNotBuiltIn = this::isNotBuiltIn;
-        this.collectionFilter = isNotBuiltIn.and(collectionFilter);
+        Predicate<CollectionId> finalCollectionFilter = isNotBuiltIn.and(collectionFilter);
+        String signalDataCollection = config.getSignalDataCollection();
+        if (signalDataCollection != null) {
+            CollectionId signalDataCollectionId = CollectionId.parse("UNUSED", signalDataCollection);
+            if (!finalCollectionFilter.test(signalDataCollectionId)) {
+                final Predicate<CollectionId> signalDataCollectionPredicate = Predicates.includes(signalDataCollectionId.namespace(), CollectionId::namespace);
+                finalCollectionFilter = finalCollectionFilter.or(signalDataCollectionPredicate);
+            }
+        }
+        this.collectionFilter = finalCollectionFilter;
 
         // Define the field selector that provides the field filter to exclude or rename fields in a document ...
         fieldSelector = FieldSelector.builder()
-                .excludeFields(config.getFallbackStringProperty(MongoDbConnectorConfig.FIELD_EXCLUDE_LIST, MongoDbConnectorConfig.FIELD_BLACKLIST))
-                .renameFields(config.getString(MongoDbConnectorConfig.FIELD_RENAMES))
+                .excludeFields(config.getFieldExcludeList())
+                .renameFields(config.getFieldRenames())
                 .build();
     }
 
@@ -96,7 +106,85 @@ public final class Filters {
         return fieldSelector.fieldFilterFor(id);
     }
 
-    protected boolean isNotBuiltIn(CollectionId id) {
-        return !BUILT_IN_DB_NAMES.contains(id.dbName());
+    private boolean isNotBuiltIn(CollectionId id) {
+        return !config.getBuiltInDbNames().contains(id.dbName());
     }
+
+    public FilterConfig getConfig() {
+        return config;
+    }
+
+    public static class FilterConfig {
+
+        private static final Set<String> BUILT_IN_DB_NAMES = Collect.unmodifiableSet("local", "admin", "config");
+
+        private final String dbIncludeList;
+        private final String dbExcludeList;
+        private final String collectionIncludeList;
+        private final String collectionExcludeList;
+        private final String fieldRenames;
+        private final String fieldExcludeList;
+        private final String signalDataCollection;
+
+        public FilterConfig(Configuration config) {
+            this.dbIncludeList = resolve(config, MongoDbConnectorConfig.DATABASE_INCLUDE_LIST);
+            this.dbExcludeList = resolve(config, MongoDbConnectorConfig.DATABASE_EXCLUDE_LIST);
+            this.collectionIncludeList = resolve(config, MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST);
+            this.collectionExcludeList = resolve(config, MongoDbConnectorConfig.COLLECTION_EXCLUDE_LIST);
+            this.fieldRenames = resolve(config, MongoDbConnectorConfig.FIELD_RENAMES);
+            this.fieldExcludeList = resolve(config, MongoDbConnectorConfig.FIELD_EXCLUDE_LIST);
+            this.signalDataCollection = resolve(config, MongoDbConnectorConfig.SIGNAL_DATA_COLLECTION);
+        }
+
+        public String getDbIncludeList() {
+            return dbIncludeList;
+        }
+
+        public String getDbExcludeList() {
+            return dbExcludeList;
+        }
+
+        public String getCollectionIncludeList() {
+            return collectionIncludeList;
+        }
+
+        public String getCollectionExcludeList() {
+            return collectionExcludeList;
+        }
+
+        public String getFieldRenames() {
+            return fieldRenames;
+        }
+
+        public String getFieldExcludeList() {
+            return fieldExcludeList;
+        }
+
+        public String getSignalDataCollection() {
+            return signalDataCollection;
+        }
+
+        public Set<String> getBuiltInDbNames() {
+            return BUILT_IN_DB_NAMES;
+        }
+
+        private static String resolve(Configuration config, Field key) {
+            return normalize(config.getString(key));
+        }
+
+        private static String normalize(String value) {
+            if (value == null) {
+                return null;
+            }
+
+            value = value.trim();
+            if (value.isEmpty()) {
+                return null;
+            }
+
+            return value;
+        }
+
+    }
+
 }

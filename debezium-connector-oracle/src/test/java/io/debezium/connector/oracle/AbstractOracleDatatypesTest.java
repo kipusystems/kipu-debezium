@@ -5,9 +5,10 @@
  */
 package io.debezium.connector.oracle;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.sql.Clob;
 import java.sql.NClob;
 import java.sql.SQLException;
@@ -31,6 +32,8 @@ import org.junit.rules.TestRule;
 import io.debezium.config.Configuration;
 import io.debezium.config.Configuration.Builder;
 import io.debezium.connector.oracle.junit.SkipTestDependingOnAdapterNameRule;
+import io.debezium.connector.oracle.junit.SkipTestWhenRunWithApicurioRule;
+import io.debezium.connector.oracle.junit.SkipWhenRunWithApicurio;
 import io.debezium.connector.oracle.util.TestHelper;
 import io.debezium.data.SchemaAndValueField;
 import io.debezium.data.VariableScaleDecimal;
@@ -100,6 +103,7 @@ public abstract class AbstractOracleDatatypesTest extends AbstractConnectorTest 
             "  val_number_4_negative_scale number(2, -2), " +
             "  val_number_9_negative_scale number(8, -1), " +
             "  val_number_18_negative_scale number(16, -2), " +
+            "  val_number_36_negative_scale number(36, -2), " +
             "  val_decimal decimal(10), " +
             "  val_numeric numeric(10), " +
             "  val_number_1 number(1), " +
@@ -199,6 +203,10 @@ public abstract class AbstractOracleDatatypesTest extends AbstractConnectorTest 
             new SchemaAndValueField("VAL_NUMBER_4_NEGATIVE_SCALE", Schema.OPTIONAL_INT16_SCHEMA, (short) 9900),
             new SchemaAndValueField("VAL_NUMBER_9_NEGATIVE_SCALE", Schema.OPTIONAL_INT32_SCHEMA, 9999_99990),
             new SchemaAndValueField("VAL_NUMBER_18_NEGATIVE_SCALE", Schema.OPTIONAL_INT64_SCHEMA, 999_99999_99999_99900L),
+            new SchemaAndValueField("VAL_NUMBER_36_NEGATIVE_SCALE", Decimal.builder(-2).optional()
+                    .parameter(PRECISION_PARAMETER_KEY, "36").build(),
+                    new BigDecimal(
+                            new BigInteger("999999999999999999999999999999999999"), -2)),
             new SchemaAndValueField("VAL_DECIMAL", Schema.OPTIONAL_INT64_SCHEMA, 99999_99999L),
             new SchemaAndValueField("VAL_NUMERIC", Schema.OPTIONAL_INT64_SCHEMA, 99999_99999L),
             new SchemaAndValueField("VAL_NUMBER_1", Schema.OPTIONAL_INT8_SCHEMA, (byte) 1));
@@ -213,10 +221,10 @@ public abstract class AbstractOracleDatatypesTest extends AbstractConnectorTest 
                     LocalDateTime.of(2018, 3, 27, 12, 34, 56).toEpochSecond(ZoneOffset.UTC) * 1_000_000 + 125500),
             new SchemaAndValueField("VAL_TS_PRECISION9", NanoTimestamp.builder().optional().build(),
                     LocalDateTime.of(2018, 3, 27, 12, 34, 56).toEpochSecond(ZoneOffset.UTC) * 1_000_000_000 + 125456789),
-            new SchemaAndValueField("VAL_TSTZ", ZonedTimestamp.builder().optional().build(), "2018-03-27T01:34:56.00789-11:00"),
+            new SchemaAndValueField("VAL_TSTZ", ZonedTimestamp.builder().optional().build(), "2018-03-27T01:34:56.007890-11:00"),
             new SchemaAndValueField("VAL_TSLTZ", ZonedTimestamp.builder().optional().build(),
                     LocalDateTime.of(2018, 3, 27, 1, 34, 56, 7890 * 1_000).atZone(ZoneOffset.systemDefault())
-                            .withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSS'Z'"))),
+                            .withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"))),
             new SchemaAndValueField("VAL_INT_YTM", MicroDuration.builder().optional().build(), -110451600_000_000L),
             new SchemaAndValueField("VAL_INT_DTS", MicroDuration.builder().optional().build(), -93784_560_000L));
 
@@ -231,10 +239,10 @@ public abstract class AbstractOracleDatatypesTest extends AbstractConnectorTest 
                     java.util.Date.from(LocalDateTime.of(2018, 3, 27, 12, 34, 56, 125500 * 1_000).atOffset(ZoneOffset.UTC).toInstant())),
             new SchemaAndValueField("VAL_TS_PRECISION9", org.apache.kafka.connect.data.Timestamp.builder().optional().build(),
                     java.util.Date.from(LocalDateTime.of(2018, 3, 27, 12, 34, 56, 125456789).atOffset(ZoneOffset.UTC).toInstant())),
-            new SchemaAndValueField("VAL_TSTZ", ZonedTimestamp.builder().optional().build(), "2018-03-27T01:34:56.00789-11:00"),
+            new SchemaAndValueField("VAL_TSTZ", ZonedTimestamp.builder().optional().build(), "2018-03-27T01:34:56.007890-11:00"),
             new SchemaAndValueField("VAL_TSLTZ", ZonedTimestamp.builder().optional().build(),
                     LocalDateTime.of(2018, 3, 27, 1, 34, 56, 7890 * 1_000).atZone(ZoneOffset.systemDefault())
-                            .withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSS'Z'"))),
+                            .withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"))),
             new SchemaAndValueField("VAL_INT_YTM", MicroDuration.builder().optional().build(), -110451600_000_000L),
             new SchemaAndValueField("VAL_INT_DTS", MicroDuration.builder().optional().build(), -93784_560_000L));
 
@@ -279,6 +287,9 @@ public abstract class AbstractOracleDatatypesTest extends AbstractConnectorTest 
 
     @Rule
     public final TestRule skipAdapterRule = new SkipTestDependingOnAdapterNameRule();
+
+    @Rule
+    public final TestRule skipApicurioRule = new SkipTestWhenRunWithApicurioRule();
 
     private static OracleConnection connection;
 
@@ -470,6 +481,7 @@ public abstract class AbstractOracleDatatypesTest extends AbstractConnectorTest 
     }
 
     @Test
+    @SkipWhenRunWithApicurio
     public void intTypes() throws Exception {
         int expectedRecordCount = 0;
 
@@ -694,7 +706,7 @@ public abstract class AbstractOracleDatatypesTest extends AbstractConnectorTest 
 
     protected static void insertIntTypes() throws SQLException {
         connection.execute(
-                "INSERT INTO debezium.type_int VALUES (1, 1, 22, 333, 4444, 5555, 99, 9999, 999999999, 999999999999999999, 94, 9949, 999999994, 999999999999999949, 9999999999, 9999999999, 1)");
+                "INSERT INTO debezium.type_int VALUES (1, 1, 22, 333, 4444, 5555, 99, 9999, 999999999, 999999999999999999, 94, 9949, 999999994, 999999999999999949, 99999999999999999999999999999999999949, 9999999999, 9999999999, 1)");
         connection.execute("COMMIT");
     }
 

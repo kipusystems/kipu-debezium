@@ -5,7 +5,7 @@
  */
 package io.debezium.connector.oracle;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -115,7 +115,7 @@ public class OracleConnectorFilterIT extends AbstractConnectorTest {
         connection.execute("ALTER TABLE debezium.table2 ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS");
 
         initializeConnectorTestFramework();
-        Testing.Files.delete(TestHelper.DB_HISTORY_PATH);
+        Testing.Files.delete(TestHelper.SCHEMA_HISTORY_PATH);
     }
 
     @After
@@ -126,47 +126,25 @@ public class OracleConnectorFilterIT extends AbstractConnectorTest {
     }
 
     @Test
-    public void shouldApplyTableWhitelistConfiguration() throws Exception {
-        shouldApplyTableInclusionConfiguration(true);
-    }
-
-    @Test
     public void shouldApplyTableIncludeListConfiguration() throws Exception {
-        shouldApplyTableInclusionConfiguration(false);
-    }
-
-    @Test
-    public void shouldApplyTableBlacklistConfiguration() throws Exception {
-        shouldApplyTableExclusionsConfiguration(true);
+        shouldApplyTableInclusionConfiguration();
     }
 
     @Test
     public void shouldApplyTableExcludeListConfiguration() throws Exception {
-        shouldApplyTableExclusionsConfiguration(false);
-    }
-
-    @Test
-    @FixFor("DBZ-3009")
-    public void shouldApplySchemaAndTableWhitelistConfiguration() throws Exception {
-        shouldApplySchemaAndTableInclusionConfiguration(true);
+        shouldApplyTableExclusionsConfiguration();
     }
 
     @Test
     @FixFor("DBZ-3009")
     public void shouldApplySchemaAndTableIncludeListConfiguration() throws Exception {
-        shouldApplySchemaAndTableInclusionConfiguration(false);
-    }
-
-    @Test
-    @FixFor("DBZ-3009")
-    public void shouldApplySchemaAndTableBlacklistConfiguration() throws Exception {
-        shouldApplySchemaAndTableExclusionsConfiguration(true);
+        shouldApplySchemaAndTableInclusionConfiguration();
     }
 
     @Test
     @FixFor("DBZ-3009")
     public void shouldApplySchemaAndTableExcludeListConfiguration() throws Exception {
-        shouldApplySchemaAndTableExclusionsConfiguration(false);
+        shouldApplySchemaAndTableExclusionsConfiguration();
     }
 
     @Test
@@ -297,12 +275,8 @@ public class OracleConnectorFilterIT extends AbstractConnectorTest {
         }
     }
 
-    private void shouldApplyTableInclusionConfiguration(boolean useLegacyOption) throws Exception {
+    private void shouldApplyTableInclusionConfiguration() throws Exception {
         Field option = OracleConnectorConfig.TABLE_INCLUDE_LIST;
-        if (useLegacyOption) {
-            option = OracleConnectorConfig.TABLE_WHITELIST;
-        }
-
         boolean includeDdlChanges = true;
         if (TestHelper.adapter().equals(OracleConnectorConfig.ConnectorAdapter.LOG_MINER)) {
             // LogMiner currently does not support DDL changes during streaming phase
@@ -363,12 +337,8 @@ public class OracleConnectorFilterIT extends AbstractConnectorTest {
         }
     }
 
-    private void shouldApplySchemaAndTableInclusionConfiguration(boolean useLegacyOption) throws Exception {
+    private void shouldApplySchemaAndTableInclusionConfiguration() throws Exception {
         Field option = OracleConnectorConfig.TABLE_INCLUDE_LIST;
-        if (useLegacyOption) {
-            option = OracleConnectorConfig.TABLE_WHITELIST;
-        }
-
         boolean includeDdlChanges = true;
         if (TestHelper.adapter().equals(OracleConnectorConfig.ConnectorAdapter.LOG_MINER)) {
             // LogMiner currently does not support DDL changes during streaming phase
@@ -446,12 +416,8 @@ public class OracleConnectorFilterIT extends AbstractConnectorTest {
         }
     }
 
-    private void shouldApplyTableExclusionsConfiguration(boolean useLegacyOption) throws Exception {
+    private void shouldApplyTableExclusionsConfiguration() throws Exception {
         Field option = OracleConnectorConfig.TABLE_EXCLUDE_LIST;
-        if (useLegacyOption) {
-            option = OracleConnectorConfig.TABLE_BLACKLIST;
-        }
-
         boolean includeDdlChanges = true;
         if (TestHelper.adapter().equals(OracleConnectorConfig.ConnectorAdapter.LOG_MINER)) {
             // LogMiner currently does not support DDL changes during streaming phase
@@ -512,12 +478,8 @@ public class OracleConnectorFilterIT extends AbstractConnectorTest {
         }
     }
 
-    private void shouldApplySchemaAndTableExclusionsConfiguration(boolean useLegacyOption) throws Exception {
+    private void shouldApplySchemaAndTableExclusionsConfiguration() throws Exception {
         Field option = OracleConnectorConfig.TABLE_EXCLUDE_LIST;
-        if (useLegacyOption) {
-            option = OracleConnectorConfig.TABLE_BLACKLIST;
-        }
-
         boolean includeDdlChanges = true;
         boolean isLogMiner = false;
         if (TestHelper.adapter().equals(OracleConnectorConfig.ConnectorAdapter.LOG_MINER)) {

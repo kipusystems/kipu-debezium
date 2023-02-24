@@ -7,40 +7,29 @@ package io.debezium.connector.mongodb;
 
 import static io.debezium.connector.mongodb.JsonSerialization.COMPACT_JSON_SETTINGS;
 import static io.debezium.data.Envelope.FieldName.AFTER;
-import static org.fest.assertions.Assertions.assertThat;
-import static org.fest.assertions.Fail.fail;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BiConsumer;
 
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.bson.Document;
 import org.bson.types.ObjectId;
-import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
 
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.InsertOneOptions;
 
+import io.debezium.config.CommonConnectorConfig;
 import io.debezium.config.Configuration;
-import io.debezium.connector.mongodb.ConnectionContext.MongoPrimary;
-import io.debezium.embedded.AbstractConnectorTest;
 import io.debezium.util.Testing;
 
-// todo: extend AbstractMongoConnectorIT?
-public class FieldBlacklistIT extends AbstractConnectorTest {
+public class FieldBlacklistIT extends AbstractMongoConnectorIT {
 
     private static final String SERVER_NAME = "serverX";
-    private static final String PATCH = MongoDbFieldName.PATCH;
-
-    private Configuration config;
-    private MongoDbTaskContext context;
 
     public static class ExpectedUpdate {
 
@@ -55,26 +44,6 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
             this.full = full;
             this.updatedFields = updatedFields;
             this.removedFields = removedFields;
-        }
-    }
-
-    @Before
-    public void beforeEach() {
-        Testing.Debug.disable();
-        Testing.Print.disable();
-        stopConnector();
-        initializeConnectorTestFramework();
-    }
-
-    @After
-    public void afterEach() {
-        try {
-            stopConnector();
-        }
-        finally {
-            if (context != null) {
-                context.getConnectionContext().shutdown();
-            }
         }
     }
 
@@ -1415,7 +1384,7 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
         config = getConfiguration("*.c1.name,*.c1.active");
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
 
         ObjectId objId = new ObjectId();
         Document obj = new Document("_id", objId);
@@ -1441,9 +1410,6 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
         Struct value = getValue(record);
 
         String json = value.getString(AFTER);
-        if (json == null) {
-            json = value.getString(PATCH);
-        }
 
         assertThat(json).isNull();
     }
@@ -1453,7 +1419,7 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
         config = getConfiguration("*.c1.name,*.c1.active");
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
 
         ObjectId objId = new ObjectId();
         Document obj = new Document("_id", objId);
@@ -1481,11 +1447,11 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
         assertThat(value).isNull();
     }
 
-    private Configuration getConfiguration(String blackList) {
-        return TestHelper.getConfiguration().edit()
-                .with(MongoDbConnectorConfig.FIELD_BLACKLIST, blackList)
-                .with(MongoDbConnectorConfig.COLLECTION_WHITELIST, "dbA.c1")
-                .with(MongoDbConnectorConfig.LOGICAL_NAME, SERVER_NAME)
+    private Configuration getConfiguration(String excludeList) {
+        return TestHelper.getConfiguration(mongo).edit()
+                .with(MongoDbConnectorConfig.FIELD_EXCLUDE_LIST, excludeList)
+                .with(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST, "dbA.c1")
+                .with(CommonConnectorConfig.TOPIC_PREFIX, SERVER_NAME)
                 .build();
     }
 
@@ -1493,25 +1459,10 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
         return (Struct) record.value();
     }
 
-    private BiConsumer<String, Throwable> connectionErrorHandler(int numErrorsBeforeFailing) {
-        AtomicInteger attempts = new AtomicInteger();
-        return (desc, error) -> {
-            if (attempts.incrementAndGet() > numErrorsBeforeFailing) {
-                fail("Unable to connect to primary after " + numErrorsBeforeFailing + " errors trying to " + desc + ": " + error);
-            }
-            logger.error("Error while attempting to {}: {}", desc, error.getMessage(), error);
-        };
-    }
-
-    private MongoPrimary primary() {
-        ReplicaSet replicaSet = ReplicaSet.parse(context.getConnectionContext().hosts());
-        return context.getConnectionContext().primaryFor(replicaSet, context.filters(), connectionErrorHandler(3));
-    }
-
     private void storeDocuments(String dbName, String collectionName, Document... documents) {
-        primary().execute("store documents", mongo -> {
+        try (var client = connect()) {
             Testing.debug("Storing in '" + dbName + "." + collectionName + "' document");
-            MongoDatabase db = mongo.getDatabase(dbName);
+            MongoDatabase db = client.getDatabase(dbName);
             MongoCollection<Document> coll = db.getCollection(collectionName);
             coll.drop();
 
@@ -1521,32 +1472,32 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
                 assertThat(document.size()).isGreaterThan(0);
                 coll.insertOne(document, insertOptions);
             }
-        });
+        }
     }
 
     private void updateDocuments(String dbName, String collectionName, ObjectId objId, Document document, boolean doSet) {
-        primary().execute("update", mongo -> {
-            MongoDatabase db = mongo.getDatabase(dbName);
+        try (var client = connect()) {
+            MongoDatabase db = client.getDatabase(dbName);
             MongoCollection<Document> coll = db.getCollection(collectionName);
             Document filter = Document.parse("{\"_id\": {\"$oid\": \"" + objId + "\"}}");
             coll.updateOne(filter, new Document().append(doSet ? "$set" : "$unset", document));
-        });
+        }
     }
 
     private void deleteDocuments(String dbName, String collectionName, ObjectId objId) {
-        primary().execute("delete", mongo -> {
-            MongoDatabase db = mongo.getDatabase(dbName);
+        try (var client = connect()) {
+            MongoDatabase db = client.getDatabase(dbName);
             MongoCollection<Document> coll = db.getCollection(collectionName);
             Document filter = Document.parse("{\"_id\": {\"$oid\": \"" + objId + "\"}}");
             coll.deleteOne(filter);
-        });
+        }
     }
 
     private void assertReadRecord(String blackList, Document snapshotRecord, String field, String expected) throws InterruptedException {
         config = getConfiguration(blackList);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
         storeDocuments("dbA", "c1", snapshotRecord);
 
         start(MongoDbConnector.class, config);
@@ -1565,7 +1516,7 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
         config = getConfiguration(blackList);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
 
         start(MongoDbConnector.class, config);
         waitForSnapshotToBeCompleted("mongodb", SERVER_NAME);
@@ -1595,7 +1546,7 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
         config = getConfiguration(blackList);
         context = new MongoDbTaskContext(config);
 
-        TestHelper.cleanDatabase(primary(), "dbA");
+        TestHelper.cleanDatabase(mongo, "dbA");
 
         storeDocuments("dbA", "c1", snapshotRecord);
 
@@ -1618,19 +1569,11 @@ public class FieldBlacklistIT extends AbstractConnectorTest {
         SourceRecord record = updateRecords.allRecordsInOrder().get(0);
         Struct value = getValue(record);
 
-        if (TestHelper.isOplogCaptureMode()) {
-            Document expectedDoc = TestHelper
-                    .getDocumentWithoutLanguageVersion(expected.patch);
-            Document actualDoc = TestHelper.getDocumentWithoutLanguageVersion(value.getString(field));
-            assertThat(actualDoc).isEqualTo(expectedDoc);
-        }
-        else {
-            TestHelper.assertChangeStreamUpdateAsDocs(objectId, value, expected.full, expected.removedFields,
-                    expected.updatedFields);
-        }
+        TestHelper.assertChangeStreamUpdateAsDocs(objectId, value, expected.full, expected.removedFields,
+                expected.updatedFields);
     }
 
     private String updateField() {
-        return TestHelper.isOplogCaptureMode() ? PATCH : AFTER;
+        return AFTER;
     }
 }
