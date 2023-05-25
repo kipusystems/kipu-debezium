@@ -1,4 +1,4 @@
-# Kipu is using the branch 1.7.
+# Kipu is using the Kipu_DBZ_200
 
 
 
