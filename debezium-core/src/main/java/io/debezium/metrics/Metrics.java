@@ -70,10 +70,10 @@ public abstract class Metrics {
                 LOGGER.info("JMX not supported, bean '{}' not registered", name);
                 return;
             }
-            mBeanServer.registerMBean(this, name);
+            //mBeanServer.registerMBean(this, name);
             registered = true;
         }
-        catch (JMException e) {
+        catch (Exception e) {
             throw new RuntimeException("Unable to register the MBean '" + name + "'", e);
         }
     }
@@ -90,10 +90,10 @@ public abstract class Metrics {
                     LOGGER.debug("JMX not supported, bean '{}' not registered", name);
                     return;
                 }
-                mBeanServer.unregisterMBean(name);
+                //mBeanServer.unregisterMBean(name);
                 registered = false;
             }
-            catch (JMException e) {
+            catch (Exception e) {
                 throw new RuntimeException("Unable to unregister the MBean '" + name + "'", e);
             }
         }
@@ -108,7 +108,7 @@ public abstract class Metrics {
      * @return the JMX metric name
      */
     protected ObjectName metricName(String connectorType, Map<String, String> tags) {
-        final String metricName = "debezium." + connectorType.toLowerCase() + ":type=connector-metrics,"
+        final String metricName = System.currentTimeMillis() + "debezium." + connectorType.toLowerCase() + ":type=connector-metrics,"
                 + tags.entrySet().stream()
                         .map(e -> e.getKey() + "=" + Sanitizer.jmxSanitize(e.getValue()))
                         .collect(Collectors.joining(","));
