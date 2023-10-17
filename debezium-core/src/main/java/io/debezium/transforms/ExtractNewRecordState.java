@@ -127,15 +127,16 @@ public class ExtractNewRecordState<R extends ConnectRecord<R>> implements Transf
     @Override
     public R apply(final R record) {
         if (record.value() == null) {
-            if (dropTombstones) {
-                LOGGER.trace("Tombstone {} arrived and requested to be dropped", record.key());
-                return null;
-            }
-            if (!additionalHeaders.isEmpty()) {
-                Headers headersToAdd = makeHeaders(additionalHeaders, (Struct) record.value());
-                headersToAdd.forEach(h -> record.headers().add(h));
-            }
-            return record;
+//            if (dropTombstones) {
+//                LOGGER.trace("Tombstone {} arrived and requested to be dropped", record.key());
+//                return null;
+//            }
+//            if (!additionalHeaders.isEmpty()) {
+//                Headers headersToAdd = makeHeaders(additionalHeaders, (Struct) record.value());
+//                headersToAdd.forEach(h -> record.headers().add(h));
+//            }
+//            return record;
+            return null;
         }
 
         if (!smtManager.isValidEnvelope(record)) {
